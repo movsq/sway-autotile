@@ -6,6 +6,7 @@ import time
 
 FAILS = []
 EVENTS = os.environ.get("AUTOTILE_EVENTS", "")  # file written by events.py, one "change id" per line
+TERMINAL = os.environ.get("AUTOTILE_TEST_TERMINAL", "kitty")
 
 
 def msg(*args):
@@ -119,7 +120,7 @@ def focus_events():
 
 def spawn(title, settle=0.8):
     before = len(windows(tree()))
-    msg(f"exec kitty --title {title}")
+    msg(f"exec {TERMINAL} --title {title}")
     for _ in range(50):
         time.sleep(0.1)
         if len(windows(tree())) > before:

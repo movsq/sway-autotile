@@ -1,14 +1,15 @@
 #!/usr/bin/env bash
-# tests/run — run the tests in sway-sandbox (headless sway from my-dots; never the real session).
+# tests/run — run the tests, each case in its own headless sway (never the session you're in).
 #
-#   tests/run [all]        scenarios + sequences + resize against ./sway-autotile (~6 min)
-#   tests/run scenarios    invariants in normal use, no event loops, tab groups intact (~1 min)
-#   tests/run sequences    9 seeded open/focus/close sequences, geometry = autotiling-rs baseline (~4 min)
+#   tests/run [all]        scenarios + sequences + resize against ./sway-autotile (~4.5 min)
+#   tests/run scenarios    invariants in normal use, no event loops, tab groups intact
+#   tests/run sequences    9 seeded open/focus/close sequences, geometry = autotiling-rs baseline
 #   tests/run resize       the case where cleanup could change placement = autotiling-rs baseline
-#   tests/run baseline     record baseline/ again with autotiling-rs alone (needs autotiling-rs)
+#   tests/run baseline     record tests/baseline/ again with autotiling-rs alone (needs autotiling-rs)
 #
-# Env: SEEDS="1 2" limits the sequences; KEEP=1 keeps the output dir.
-# Needs: sway-sandbox (+ sway, kitty) on PATH.
+# Env: SEEDS="1 2" limits the sequences; KEEP=1 keeps the output dir;
+#      AUTOTILE_TEST_TERMINAL (default kitty) = the client that opens windows (needs a --title option).
+# Needs: sway, python3, kitty (or the terminal above).
 # shellcheck disable=SC2329  # cleanup and the test functions are called indirectly (trap, "$1")
 set -uo pipefail
 
@@ -16,45 +17,93 @@ TESTS=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 ROOT=$(dirname "$TESTS")
 OUT=$(mktemp -d -p "${XDG_RUNTIME_DIR:-/tmp}" sway-autotile-tests.XXXXXX)
 SEEDS=${SEEDS:-"1 2 3 4 5 6 7 8 9"}
+export AUTOTILE_TEST_TERMINAL=${AUTOTILE_TEST_TERMINAL:-kitty}
 FAILED=0
+SWAY_PID=""
 
-command -v sway-sandbox >/dev/null || { echo "tests/run: sway-sandbox not on PATH" >&2; exit 2; }
+for c in sway python3 "${AUTOTILE_TEST_TERMINAL%% *}"; do
+    command -v "$c" >/dev/null || { echo "tests/run: $c not found" >&2; exit 2; }
+done
+
+# A headless sway with a fixed output and config, software-rendered (no GPU), detached from the
+# session this runs in. Sets SWAY_PID, WAYLAND_DISPLAY, SWAYSOCK for the case.
+start_sway() {
+    local dir=$1
+    cat >"$dir/config" <<EOF
+output HEADLESS-1 mode 2560x1440
+default_border pixel 2
+gaps inner 8
+smart_gaps on
+font pango:monospace 10
+exec sh -c 'env | grep -E "^(WAYLAND_DISPLAY|SWAYSOCK)=" > "$dir/env.tmp" && mv "$dir/env.tmp" "$dir/env"'
+EOF
+    env -u WAYLAND_DISPLAY -u SWAYSOCK -u I3SOCK -u DISPLAY \
+        WLR_BACKENDS=headless WLR_HEADLESS_OUTPUTS=1 WLR_LIBINPUT_NO_DEVICES=1 WLR_RENDERER=pixman \
+        sway --unsupported-gpu -c "$dir/config" </dev/null >"$dir/sway.log" 2>&1 &
+    SWAY_PID=$!
+    local i
+    for ((i = 0; i < 100; i++)); do
+        [[ -f $dir/env ]] && break
+        kill -0 "$SWAY_PID" 2>/dev/null || { tail -5 "$dir/sway.log"; return 1; }
+        sleep 0.1
+    done
+    [[ -f $dir/env ]] || return 1
+    WAYLAND_DISPLAY=$(sed -n 's/^WAYLAND_DISPLAY=//p' "$dir/env")
+    SWAYSOCK=$(sed -n 's/^SWAYSOCK=//p' "$dir/env")
+    export WAYLAND_DISPLAY SWAYSOCK
+    unset I3SOCK DISPLAY
+}
+
+stop_sway() {
+    [[ -n $SWAY_PID ]] || return 0
+    kill "$SWAY_PID" 2>/dev/null
+    wait "$SWAY_PID" 2>/dev/null
+    SWAY_PID=""
+}
+
 cleanup() {
-    sway-sandbox stop >/dev/null 2>&1
+    stop_sway
     if [[ ${KEEP:-} == 1 ]]; then echo "output kept in $OUT"; else rm -rf "$OUT"; fi
 }
 trap cleanup EXIT
 
-# case NAME AUTOTILER SCRIPT ARGS… — fresh sandbox, event logger, autotiler, then the test script.
+# case_ NAME AUTOTILER SCRIPT ARGS… — fresh sway, event logger, autotiler, then the test script.
+# Runs in a subshell so the sway sockets never leak into the next case.
 case_() {
     local name=$1 autotiler=$2; shift 2
-    sway-sandbox stop >/dev/null 2>&1
-    sway-sandbox start >/dev/null 2>&1 || { echo "FAIL $name: sandbox did not start"; FAILED=1; return; }
-    : >"$OUT/$name.events"
-    sway-sandbox spawn python3 -B "$TESTS/events.py" "$OUT/$name.events"
-    sway-sandbox spawn sh -c "echo \$\$ > '$OUT/$name.pid'; exec $autotiler 2> '$OUT/$name.err'"
-    sleep 1
-    sway-sandbox run env AUTOTILE_EVENTS="$OUT/$name.events" python3 -B "$@" >"$OUT/$name.out" 2>&1
-    local rc=$?
-    grep -E '^FAIL' "$OUT/$name.out"
-    [[ $rc != 0 ]] && { echo "FAIL $name: test script exited $rc"; tail -3 "$OUT/$name.out"; FAILED=1; }
-    if ! kill -0 "$(cat "$OUT/$name.pid" 2>/dev/null)" 2>/dev/null; then
-        echo "FAIL $name: the autotiler died"; FAILED=1
-    fi
-    if grep -qE "Traceback|'success': False" "$OUT/$name.err"; then
-        echo "FAIL $name: errors from the autotiler:"; grep -E "Traceback|'success': False" "$OUT/$name.err" | head -3; FAILED=1
-    fi
-    local passed; passed=$(grep -c '^PASS' "$OUT/$name.out")
-    [[ $passed != 0 ]] && echo "     $name: $passed checks passed"
-    return 0
+    local dir="$OUT/$name"
+    mkdir -p "$dir"
+    (
+        start_sway "$dir" || { echo "FAIL $name: sway did not start"; exit 1; }
+        trap stop_sway EXIT
+        : >"$dir/events"
+        python3 -B "$TESTS/events.py" "$dir/events" &
+        # shellcheck disable=SC2086  # the autotiler command is meant to be word-split
+        $autotiler 2>"$dir/autotiler.err" &
+        local pid=$! rc=0 failed=0
+        sleep 1
+        AUTOTILE_EVENTS="$dir/events" python3 -B "$@" >"$dir/out" 2>&1 || rc=$?
+        grep -E '^FAIL ' "$dir/out"
+        if [[ $rc != 0 ]]; then echo "FAIL $name: test script exited $rc"; tail -3 "$dir/out"; failed=1; fi
+        if ! kill -0 "$pid" 2>/dev/null; then echo "FAIL $name: the autotiler died"; failed=1; fi
+        if grep -qE "Traceback|'success': False" "$dir/autotiler.err"; then
+            echo "FAIL $name: errors from the autotiler:"
+            grep -E "Traceback|'success': False" "$dir/autotiler.err" | head -3
+            failed=1
+        fi
+        local passed; passed=$(grep -c '^PASS' "$dir/out")
+        [[ $passed != 0 ]] && echo "     $name: $passed checks passed"
+        exit $failed
+    ) || FAILED=1
 }
 
-autotile="python3 -B '$ROOT/sway-autotile' --debug"
+autotile="python3 -B $ROOT/sway-autotile --debug"
 
 scenarios() { echo "== scenarios"; case_ scenarios "$autotile" "$TESTS/scenarios.py"; }
 
 sequences() {
     echo "== sequences (seeds: $SEEDS)"
+    local s
     for s in $SEEDS; do
         case_ "seq-$s" "$autotile" "$TESTS/sequences.py" "$s" "$OUT/seq-$s.jsonl" --check
         python3 -B "$TESTS/compare.py" seq "$TESTS/baseline/seq-$s.jsonl" "$OUT/seq-$s.jsonl" || FAILED=1
@@ -70,6 +119,7 @@ resize() {
 baseline() {
     command -v autotiling-rs >/dev/null || { echo "baseline needs autotiling-rs installed" >&2; exit 2; }
     echo "== baseline with $(autotiling-rs --version)"
+    local s
     for s in $SEEDS; do
         case_ "base-seq-$s" autotiling-rs "$TESTS/sequences.py" "$s" "$TESTS/baseline/seq-$s.jsonl"
     done
@@ -79,8 +129,8 @@ baseline() {
 case ${1:-all} in
     all) scenarios; sequences; resize ;;
     scenarios|sequences|resize|baseline) "$1" ;;
-    *) sed -n '2,10p' "$0"; exit 2 ;;
+    *) sed -n '2,12p' "$0"; exit 2 ;;
 esac
 echo
-[[ $FAILED == 0 ]] && echo "ALL PASSED" || echo "SOME TESTS FAILED"
+if [[ $FAILED == 0 ]]; then echo "ALL PASSED"; else echo "SOME TESTS FAILED"; fi
 exit $FAILED
