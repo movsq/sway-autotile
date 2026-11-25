@@ -4,8 +4,7 @@ Autotiling for [sway](https://swaywm.org) that also removes the invisible one-wi
 splits leave behind. New windows split the focused one along its longer side, so windows form a spiral,
 and each leftover container is removed once you move on.
 
-It is one Python file that uses only the standard library and reacts to sway's IPC events instead of
-polling.
+It is one Python file that uses only the standard library and reacts to sway's IPC events.
 
 ## Why
 
@@ -16,25 +15,27 @@ no window opens there, the wrapper stays. You can't see it, but `layout tabbed` 
 group with a single tab, and `move` and `resize` work on a level of the tree you didn't know was there.
 Closing windows leaves the same kind of one-window containers behind, sometimes nested.
 
-sway-autotile removes those containers as soon as they stop doing anything, and a new window takes
-half of the focused one, also where autotiling-rs would give it a smaller share.
+sway-autotile removes those containers once focus moves on or their windows close, and a new window
+takes half of the focused one, also where autotiling-rs would give it a smaller share.
 
 ## What it does
 
 - Splits the focused tile along its longer side so the next window takes half of it. Floating,
-  fullscreen, tabbed, and stacked windows keep Sway's native layout behavior.
+  fullscreen, tabbed, and stacked windows keep sway's own layout behavior.
 - Prepares the focused tile at startup and after focus, close, and floating changes. When a window
-  opens, it checks the split direction again in case the focused tile was resized. Sway's
-  directional move of a prepared tile only takes it out of its split. When a key binding ran the
-  move, sway-autotile sends it again and prepares the tile, so one press moves it. A move from
-  `swaymsg` or a script sends no binding event: the first one only takes the tile out of its split,
-  and the tile is prepared again when another window opens or focus changes.
+  opens, it checks the split direction again in case the focused tile was resized.
+- Moves the tile on the first press of a move key. sway's directional `move` of a prepared tile only
+  takes it out of its split, so the tile would need a second press to move. When a key binding ran
+  the move, sway-autotile sends the same move again and then prepares the tile. A `move` from
+  `swaymsg` or a script sends no binding event, so there the first command only takes the tile out of
+  its split. Dragging a tile with the mouse works as in plain sway.
 - Removes one-window split containers with `split none` after every focus change, close, move or
   floating toggle. It keeps:
   - the focused window's own container, which decides where the next window goes;
   - tabbed and stacked containers, so a tab group with one tab stays a tab group;
   - containers that are marked or focused.
-- Does both in one process, one event at a time, so a cleanup can't undo a split made a moment earlier.
+- Does the splits and the cleanup in one process, one event at a time, so a cleanup can't undo a
+  split made a moment earlier.
 
 Example: a sway tree where `two` was left inside its own `splitv` container and `one` has focus.
 
@@ -56,8 +57,8 @@ so the next window opens below it.
 
 ## Requirements
 
-- sway (tested with 1.12)
-- Python 3, standard library only (tested with 3.14)
+- sway, tested with 1.12
+- Python 3, standard library only, tested with 3.14
 
 ## Install
 
@@ -133,7 +134,7 @@ focus change must move no window, and a close must make none smaller.
 Issues and pull requests are welcome. Changes to `sway-autotile` should pass `tests/run`. The design
 constraints in [AGENTS.md](AGENTS.md) explain the non-obvious parts: why `split none` is only sent for
 whole runs of split containers, why windows are split even when their parent already has the right
-layout, and why it's one process.
+layout, why a key's move is sometimes sent twice, and why it's one process.
 
 ## Acknowledgements
 
