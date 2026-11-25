@@ -16,21 +16,21 @@ no window opens there, the wrapper stays. You can't see it, but `layout tabbed` 
 group with a single tab, and `move` and `resize` work on a level of the tree you didn't know was there.
 Closing windows leaves the same kind of one-window containers behind, sometimes nested.
 
-sway-autotile places windows exactly like autotiling-rs, which its tests check step by step, and removes
-those containers as soon as they stop doing anything.
+sway-autotile removes those containers as soon as they stop doing anything, and a new window always
+takes half of the focused one.
 
 ## What it does
 
-- Splits the focused window along its longer side, `splitv` if it's taller than wide, else `splith`.
-  It follows the same rules as autotiling-rs: no splits for floating or fullscreen windows, inside tabbed
-  or stacked containers, or when the parent already has that layout.
+- Splits the focused window along its longer side, `splitv` if it's taller than wide, else `splith`,
+  so the next window takes half of it. No splits for floating or fullscreen windows or inside tabbed or
+  stacked containers. It also splits a window whose parent already has that layout. autotiling-rs
+  skips that split, so there the next window gets an equal share of the parent. The split is checked
+  again after every close, move or floating toggle, because the focused window may have changed shape.
 - Removes one-window split containers with `split none` after every focus change, close, move or
   floating toggle. It keeps:
   - the focused window's own container, which decides where the next window goes;
-  - tabbed and stacked containers (a tab group with one tab stays a tab group);
+  - tabbed and stacked containers, so a tab group with one tab stays a tab group;
   - containers that are marked or focused.
-- When it removed the container of a window whose longer side matches its parent's layout, it splits that
-  window again on its next focus, so the next window still halves it instead of sharing the parent.
 - Does both in one process, one event at a time, so a cleanup can't undo a split made a moment earlier.
 
 Example: a sway tree where `two` was left inside its own `splitv` container and `one` has focus.
@@ -58,13 +58,26 @@ so the next window opens below it.
 
 ## Install
 
+Copy the script into your `PATH`:
+
 ```bash
 git clone https://github.com/movsq/sway-autotile.git
 install -Dm755 sway-autotile/sway-autotile ~/.local/bin/sway-autotile
 ```
 
+Or, on Arch Linux, build a package from the checkout with the `PKGBUILD` in the repository. It installs
+to `/usr/bin/sway-autotile`:
+
+```bash
+cd sway-autotile
+makepkg -si
+```
+
+## Configuration
+
 Remove any other autotiler, such as `autotiling` or `autotiling-rs`, because two autotilers would split
-the same windows. Then add it to your sway config:
+the same windows. Then add this line to your sway config, or `exec sway-autotile` if you installed the
+package:
 
 ```
 exec ~/.local/bin/sway-autotile
@@ -96,8 +109,8 @@ It needs `SWAYSOCK`, which sway sets for everything it starts, including your te
 ```bash
 tests/run              # everything, about 4.5 minutes
 tests/run scenarios    # invariants in normal use: no leftover containers, no event loops, tab groups intact
-tests/run sequences    # 9 seeded open/focus/close sequences; window geometry must match the baseline at every step
-tests/run resize       # the case where cleaning up could change where windows open
+tests/run sequences    # 9 seeded open/focus/close sequences; placement checked after every step
+tests/run resize       # windows whose longer side already matches their parent's layout
 ```
 
 Each case starts its own headless, software-rendered sway, so nothing happens in your session. The tests
@@ -105,19 +118,20 @@ need sway, python3 and kitty. To use another terminal with a `--title` option, s
 `AUTOTILE_TEST_TERMINAL`. `SEEDS="1 2" tests/run sequences` runs a subset, and `KEEP=1` keeps the output
 directory.
 
-`tests/baseline/` holds the geometry autotiling-rs produces for the same sequences. `tests/run baseline`
-records it again and needs `autotiling-rs`.
+After each window opens, the tests check that the new window and the window focused before it fill the
+old rectangle of the focused window, half each along its longer side, and that no other window moved. A
+focus change must move no window, and a close must make none smaller.
 
 ## Development
 
 Issues and pull requests are welcome. Changes to `sway-autotile` should pass `tests/run`. The design
 constraints in [AGENTS.md](AGENTS.md) explain the non-obvious parts: why `split none` is only sent for
-whole runs of split containers, why windows are split again, and why it's one process.
+whole runs of split containers, why windows are split even when their parent already has the right
+layout, and why it's one process.
 
 ## Acknowledgements
 
-The split rules come from [autotiling-rs](https://github.com/ammgws/autotiling-rs) (MIT), which is also
-the reference for window placement in the tests.
+The split direction rule comes from [autotiling-rs](https://github.com/ammgws/autotiling-rs) (MIT).
 
 ## License
 
