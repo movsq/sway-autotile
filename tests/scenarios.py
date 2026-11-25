@@ -1,8 +1,8 @@
 """Scenario suite: invariants after every step of normal use, no event loops, tab groups intact."""
 import time
 
-from lib import (by_title, check, check_open, cmd, finish, focus_events, geom, msg, parents, result, show,
-                 spawn, tree, wid, windows)
+from lib import (by_title, check, check_open, cmd, finish, focus_events, focused_window, geom, msg, parents,
+                 result, show, spawn, tree, wid, windows)
 
 
 def focus_and_check(title, label):
@@ -138,10 +138,36 @@ result(order() == ["m2", "m1"], f"12 2x move right: m1 on the right ({order()})"
 cmd("move left")
 check("12 move left")
 result(order() == ["m1", "m2"], f"12 move left: m1 back on the left ({order()})")
-cmd(f"[con_id={wid('m2')}] focus")
-cmd(f"[con_id={wid('m1')}] focus")
 before = tree()
 spawn("m3")
-check_open(before, check("12 open after moving"), "m3", "12 after moving and refocusing")
+check_open(before, check("12 open after moving"), "m3", "12 after moving without refocusing")
+before = tree()
+spawn("m4")
+check_open(before, check("12 next open"), "m4", "12 after the corrected open")
+
+print("== 13 an open after the focused split was removed")
+cmd("workspace 6")
+spawn("u1")
+spawn("u2")
+cmd(f"[con_id={wid('u1')}] focus")
+cmd(f"[con_id={wid('u1')}] split none")
+before = tree()
+spawn("u3")
+check_open(before, check("13"), "u3", "13 open after split none")
+
+print("== 14 opens after a move when Sway keeps focus on the old tile")
+cmd("workspace 7")
+spawn("f1")
+spawn("f2")
+cmd(f"[con_id={wid('f1')}] focus")
+cmd("move right")
+cmd("move right")
+cmd("no_focus [all]")
+for title in ("f3", "f4"):
+    before = tree()
+    spawn(title)
+    after = check(f"14 after opening {title}")
+    check_open(before, after, title, "14")
+    result(focused_window(after)["id"] == wid("f1"), f"14 opening {title} keeps focus on f1")
 
 finish()

@@ -1,15 +1,12 @@
 #!/usr/bin/env python3
 """sway-autotile — autotiling for sway that cleans up after itself.
 
-Autotiling: the focused window is split along its longer side (`splitv` if taller than wide, else
-`splith`), so the next window takes half of it and windows form a spiral. This is decided again after
-every focus/close/floating change: sway sends the focus event for the next window before the close
-event, so a window that grows when its neighbour closes would otherwise keep a split for its old
-shape. Not after a move: sway's `move` first takes a window out of its wrapper, so a new wrapper
-after each move would keep the window in place; the split follows on the next focus change. No split for floating or fullscreen windows or inside tabbed/stacked containers. The
-direction rule comes from autotiling-rs (github.com/ammgws/autotiling-rs); unlike autotiling-rs it
-also splits a window whose parent already has that layout, so a new window always halves the focused
-one instead of sometimes getting an equal share of the parent.
+Autotiling: prepare the focused tile for a split along its longer side at startup and after a
+focus, close or floating change. Recheck the direction when a window opens, since Sway can resize
+the focused tile without a window event. Directional moves can take a tile out of its split, so
+wait for the next open or focus change before wrapping it again. Floating, fullscreen, tabbed and
+stacked windows are excluded. The split direction rule comes from autotiling-rs
+(github.com/ammgws/autotiling-rs).
 
 Cleanup: a split wraps the window in a container with that one window inside. Once focus moves on,
 nothing opens there and the wrapper stays — an invisible extra level that makes moving windows,
@@ -35,12 +32,13 @@ import os
 import socket
 import struct
 import sys
+from uuid import uuid4
 
 MAGIC = b"i3-ipc"
 HEADER = struct.Struct("=6sII")
-RUN_COMMAND, SUBSCRIBE, GET_TREE = 0, 2, 4
-EVENT_WINDOW = 0x80000003
-TRIGGERS = {"focus", "close", "move", "floating"}
+RUN_COMMAND, SUBSCRIBE, GET_TREE, SEND_TICK = 0, 2, 4, 10
+EVENT_WINDOW, EVENT_TICK = 0x80000003, 0x80000007
+TRIGGERS = {"focus", "close", "move", "floating", "new"}
 SPLITS = ("splith", "splitv")
 
 
@@ -143,44 +141,99 @@ def focused_tiling(tree):
     return None
 
 
-def plan_split(tree):
-    """The autotiling split for the focused node, or None."""
+def split_target(tree):
     hit = focused_tiling(tree)
     if not hit:
         return None
     node, parent = hit
     if node.get("fullscreen_mode") or (node.get("percent") or 0) > 1.0:
         return None
-    if parent["layout"] not in SPLITS:
-        return None  # tabbed/stacked: not autotiled
-    want = "splitv" if node["rect"]["height"] > node["rect"]["width"] else "splith"
+    if parent["layout"] in SPLITS:
+        return node, parent
+
+
+def split_layout(node):
+    rect = node["rect"]
+    return "splitv" if rect["height"] > rect["width"] else "splith"
+
+
+def plan_split(node, parent):
+    want = split_layout(node)
     if len(parent["nodes"]) >= 2:
-        # Wrap it even when the parent already has that layout: otherwise the next window would
-        # join the parent and get an equal share of it instead of half of this window.
+        # Wrap it so the next window halves this one, even if the parent already splits this way.
         return f"[con_id={node['id']}] {want}"
     if parent["layout"] == want:
-        return None  # alone in a container that already splits the right way
+        return None
     if is_wrapper(parent):
-        return f"[con_id={node['id']}] layout {want}"  # turn its wrapper instead of nesting another
-    return f"[con_id={node['id']}] {want}"  # alone on the workspace: sway sets the workspace layout
+        return f"[con_id={node['id']}] layout {want}"
+    return f"[con_id={node['id']}] {want}"  # a lone tile can set the workspace layout
 
 
-def run_pass(sock, autotile, dry_run, debug):
-    tree = request(sock, GET_TREE)
+def opening_parent(tree, old_id, new_id):
+    hit = split_target(tree)
+    if not hit:
+        return None
+    node, parent = hit
+    if node["id"] not in (old_id, new_id) or node["nodes"]:
+        return None
+    siblings = parent["nodes"]
+    if any(left["id"] == old_id and right["id"] == new_id and not (left["nodes"] or right["nodes"])
+           for left, right in zip(siblings, siblings[1:])):
+        return parent
+    return None
+
+
+def orient_pair(parent, old_id):
+    # A resize can change the old tile's longer side without sending a window event. Use the
+    # combined rectangle of the pair, which still occupies the old tile's space.
+    want = split_layout(parent)
+    return [f"[con_id={old_id}] layout {want}"] if parent["layout"] != want else []
+
+
+def plan_open(tree, old_id, new_id):
+    parent = opening_parent(tree, old_id, new_id)
+    if not parent:
+        return [], False
+    if len(parent["nodes"]) == 2:
+        # Sway may leave focus on the old tile, which then needs to be prepared again.
+        old_focused = parent["nodes"][0]["focused"]
+        return orient_pair(parent, old_id), old_focused
+
+    # The old tile shared its parent with other tiles before this open. Moving the new tile
+    # into a wrapper around the old one restores the siblings' proportions. Keep the parent
+    # direction for the move, then check the longer side once the old rectangle is restored.
+    mark = f"__sway_autotile_{uuid4().hex}"
+    old, new = f"[con_id={old_id}]", f"[con_id={new_id}]"
+    commands = [f"{old} {parent['layout']}", f"{old} mark --add {mark}",
+                f"{new} move container to mark {mark}", f"{old} unmark {mark}"]
+    return commands, True
+
+
+def run_pass(sock, tree, dry_run, debug, moved=False):
     commands = [f"[con_id={t['id']}] split none" for t in plan_unwrap(tree)]
-    if autotile:
-        split = plan_split(tree)
+    hit = split_target(tree)
+    if hit and not moved:
+        split = plan_split(*hit)
         if split:
             commands.append(split)
+    run_commands(sock, commands, dry_run, debug)
+    if hit and not hit[0]["nodes"]:
+        return hit[0]["id"]
+    return None
+
+
+def run_commands(sock, commands, dry_run, debug):
     if not commands:
-        return
+        return False
     command = "; ".join(commands)
     if dry_run:
         print(command, flush=True)
-        return
+        return False
     results = request(sock, RUN_COMMAND, command)
-    if debug or not all(r.get("success") for r in results):
+    success = all(r.get("success") for r in results)
+    if debug or not success:
         print(f"sway-autotile: {command} -> {results}", file=sys.stderr, flush=True)
+    return success
 
 
 def main():
@@ -195,20 +248,51 @@ def main():
 
     sock = connect()
     if "--once" in args:
-        run_pass(sock, True, dry_run, debug)
+        run_pass(sock, request(sock, GET_TREE), dry_run, debug)
         return
 
     events = connect()
-    if not request(events, SUBSCRIBE, '["window"]').get("success"):
+    if not request(events, SUBSCRIBE, '["window", "tick"]').get("success"):
         sys.exit("sway-autotile: subscribe failed")
-    run_pass(sock, False, dry_run, debug)
+    previous = run_pass(sock, request(sock, GET_TREE), dry_run, debug)
+    pending = None
     while True:
         kind, event = recv(events)
+        if kind == EVENT_TICK and pending and event.get("payload") == pending[0]:
+            token, old_id, new_id, recheck = pending
+            pending = None
+            tree = request(sock, GET_TREE)
+            parent = opening_parent(tree, old_id, new_id)
+            if parent and len(parent["nodes"]) == 2:
+                commands = orient_pair(parent, old_id) if recheck else []
+                if commands:
+                    if run_commands(sock, commands, dry_run, debug):
+                        pending = (token, old_id, new_id, False)
+                        request(sock, SEND_TICK, token)
+                else:
+                    previous = run_pass(sock, tree, dry_run, debug)
+            continue
         if kind != EVENT_WINDOW or event.get("change") not in TRIGGERS:
             continue
-        # No split after a move: sway's `move` first takes a window out of its one-child wrapper
-        # without moving it, so a wrapper made after every move would keep the window from moving.
-        run_pass(sock, event["change"] != "move", dry_run, debug)
+        change, node_id = event["change"], event["container"]["id"]
+        if change == "new":
+            if previous:
+                tree = request(sock, GET_TREE)
+                commands, follow_up = plan_open(tree, previous, node_id)
+                if commands:
+                    if run_commands(sock, commands, dry_run, debug) and follow_up:
+                        # Re-read the restored rectangle in a separate IPC pass. Focus may stay
+                        # on the old tile, so a synthetic event drives the follow-up in both cases.
+                        token = f"sway-autotile:{uuid4().hex}"
+                        pending = (token, previous, node_id, True)
+                        request(sock, SEND_TICK, token)
+                elif follow_up:
+                    previous = run_pass(sock, tree, dry_run, debug)
+            continue
+        if pending and node_id == pending[2] and change in ("focus", "move"):
+            continue  # the queued tick will prepare the focused tile after the placement check
+        # Rewrapping on user moves would keep the tile in place on subsequent directional moves.
+        previous = run_pass(sock, request(sock, GET_TREE), dry_run, debug, moved=change == "move")
 
 
 if __name__ == "__main__":

@@ -52,14 +52,21 @@ SEEDS="1 2" tests/run sequences    # a subset
   half). Only a window alone in its container needs no split, at most a `layout` change of that
   container. `tests/run resize` covers the windows this matters for.
 - One process, one pass per event, all commands of a pass in one RUN_COMMAND: a separate autotiler +
-  cleaner raced (a cleanup could remove a wrapper made for a window focused in the meantime).
-- Cleanup runs on every focus/close/move/floating event, splits on focus/close/floating (not on focus
-  only like autotiling-rs): sway sends the focus event for the next window *before* the close event, so a
-  window that grows when its neighbour closes kept a split for its old shape (seeds 1, 4, 5 in
-  `tests/run sequences`). Never split on `move`: sway's `move` first takes the window out of its
-  one-child wrapper without moving it, so re-wrapping after each move kept the window in place for good
-  (`tests/scenarios.py` section 12). The cost: a window opened right after a move, before any focus
-  change, gets an equal share of the moved window's parent (no hook runs between the move and the open).
+  cleaner raced (a cleanup could remove a wrapper made for a window focused in the meantime). The one
+  exception is the open repair below: its follow-up pass runs on the daemon's own tagged tick.
+- The daemon prepares the focused split at startup and after focus/close/floating events. Sway can
+  send a focus event before a close changes the next window's shape (seeds 1, 4, 5).
+- Cleanup also runs on move. Never split on `move`: sway's first directional move can simply take
+  the window out of its wrapper, so rewrapping on every move would keep it in place.
+- If an opening joins the focused tile's siblings, wrap the old tile and move the new tile into the
+  wrapper. A tagged IPC tick then rechecks the restored rectangle and prepares the next split,
+  including when Sway keeps focus on the old tile. Scenarios 12–14 cover moves, manual `split none`,
+  and opens that keep focus on the old tile.
+- Sway can resize the focused tile without sending a window event. On `new`, recheck the direction
+  using the rectangle occupied by the pair if it already shares a split. The F and M cases in
+  `tests/run resize` check an open after a resize without refocusing, including after a move.
 - `split`, `layout` and `split none` aimed at a con with `[con_id=]` emit no window event and don't move
-  focus → no loop. `tests/scenarios.py` section 10: 30 focus commands → exactly 30 focus events.
+  focus → no loop. `tests/scenarios.py` section 10: 30 focus commands → exactly 30 focus events. The open
+  repair is the exception: its `mark` and `move container to mark` emit window events, so the daemon
+  skips the new window's focus and move events until its tick arrives.
 - No dependencies beyond the Python standard library (no i3ipc): keep it that way.

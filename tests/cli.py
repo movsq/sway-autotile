@@ -8,13 +8,14 @@ so each section runs the program itself.
   5 --once                     runs them, then exits
   6 daemon --dry-run           prints a pass per event, changes nothing
   7 daemon without options     splits and cleans up, logs nothing
+  8 daemon startup             the first open halves an already focused tile
 """
 import os
 import subprocess
 import sys
 import time
 
-from lib import PROGRAM, check, cmd, finish, parents, result, spawn, tree, wid
+from lib import PROGRAM, check, check_open, cmd, finish, parents, result, spawn, tree, wid
 
 
 def run(*args, env=None):
@@ -103,5 +104,20 @@ result(daemon.poll() is None, "7 the daemon is still running")
 daemon.terminate()
 out, err = daemon.communicate(timeout=10)
 result(not out and not err, f"7 logs nothing (out {out!r}, err {err[-200:]!r})")
+
+print("== 8 daemon started with a focused tile")
+cmd("workspace 2")
+spawn("existing-a")
+spawn("existing-b")
+cmd(f"[con_id={wid('existing-a')}] focus")
+daemon = subprocess.Popen([sys.executable, "-B", PROGRAM])
+try:
+    time.sleep(1)
+    before = tree()
+    spawn("first")
+    check_open(before, check("8 first open"), "first", "8 startup")
+finally:
+    daemon.terminate()
+    daemon.wait(timeout=10)
 
 finish()
