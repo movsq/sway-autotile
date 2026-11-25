@@ -1,7 +1,7 @@
 """Scenario suite: invariants after every step of normal use, no event loops, tab groups intact."""
 import time
 
-from lib import (by_title, check, check_open, cmd, finish, focus_events, geom, msg, parents, result, show,
+from lib import (by_title, check, check_open, cmd, finish, focus_events, focused_window, geom, msg, parents, result, show,
                  spawn, tree, wid, windows)
 
 
@@ -144,5 +144,20 @@ check_open(before, check("12 open after moving"), "m3", "12 after moving without
 before = tree()
 spawn("m4")
 check_open(before, check("12 next open"), "m4", "12 after the corrected open")
+
+print("== 13 opens after a move when Sway keeps focus on the old tile")
+cmd("workspace 6")
+spawn("f1")
+spawn("f2")
+cmd(f"[con_id={wid('f1')}] focus")
+cmd("move right")
+cmd("move right")
+cmd("no_focus [all]")
+for title in ("f3", "f4"):
+    before = tree()
+    spawn(title)
+    after = check(f"13 after opening {title}")
+    check_open(before, after, title, "13")
+    result(focused_window(after)["id"] == wid("f1"), f"13 opening {title} keeps focus on f1")
 
 finish()

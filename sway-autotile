@@ -36,8 +36,8 @@ from uuid import uuid4
 
 MAGIC = b"i3-ipc"
 HEADER = struct.Struct("=6sII")
-RUN_COMMAND, SUBSCRIBE, GET_TREE = 0, 2, 4
-EVENT_WINDOW = 0x80000003
+RUN_COMMAND, SUBSCRIBE, GET_TREE, SEND_TICK = 0, 2, 4, 10
+EVENT_WINDOW, EVENT_TICK = 0x80000003, 0x80000007
 TRIGGERS = {"focus", "close", "move", "floating", "new"}
 SPLITS = ("splith", "splitv")
 
@@ -174,10 +174,10 @@ def opening_parent(tree, old_id, new_id):
     if not hit:
         return None
     node, parent = hit
-    if node["id"] != new_id or node["nodes"]:
+    if node["id"] not in (old_id, new_id) or node["nodes"]:
         return None
     siblings = parent["nodes"]
-    if any(left["id"] == old_id and not left["nodes"] and right["id"] == new_id
+    if any(left["id"] == old_id and right["id"] == new_id and not (left["nodes"] or right["nodes"])
            for left, right in zip(siblings, siblings[1:])):
         return parent
     return None
@@ -194,23 +194,23 @@ def plan_open(tree, new_id, previous):
     old_id, old_parent, moved_layout = previous
     parent = opening_parent(tree, old_id, new_id)
     if not parent:
-        return [], None
+        return [], False
     if len(parent["nodes"]) == 2:
-        return orient_pair(parent, old_id), None
+        # Sway may leave focus on the old tile, which then needs to be prepared again.
+        old_focused = parent["nodes"][0]["focused"]
+        return orient_pair(parent, old_id), old_focused
     if moved_layout and parent["id"] == old_parent:
         # Sway inserted the new tile beside the old one. Moving the new tile into a wrapper
         # around the old one restores the proportions of the other siblings.
         mark = f"__sway_autotile_{uuid4().hex}"
-        marker = f"{mark}_new"
         old, new = f"[con_id={old_id}]", f"[con_id={new_id}]"
-        commands = [f"{old} {moved_layout}", f"{old} mark --add {mark}", f"{new} mark --add {marker}",
-                    f"{new} move container to mark {mark}", f"{new} unmark {marker}", f"{old} unmark {mark}"]
-        return commands, (old_id, new_id, marker)
-    return [], None
+        commands = [f"{old} {moved_layout}", f"{old} mark --add {mark}",
+                    f"{new} move container to mark {mark}", f"{old} unmark {mark}"]
+        return commands, True
+    return [], False
 
 
-def run_pass(sock, dry_run, debug, moved=False):
-    tree = request(sock, GET_TREE)
+def run_pass(sock, tree, dry_run, debug, moved=False):
     commands = [f"[con_id={t['id']}] split none" for t in plan_unwrap(tree)]
     hit = split_target(tree)
     if hit and not moved:
@@ -252,41 +252,51 @@ def main():
 
     sock = connect()
     if "--once" in args:
-        run_pass(sock, dry_run, debug)
+        run_pass(sock, request(sock, GET_TREE), dry_run, debug)
         return
 
     events = connect()
-    if not request(events, SUBSCRIBE, '["window"]').get("success"):
+    if not request(events, SUBSCRIBE, '["window", "tick"]').get("success"):
         sys.exit("sway-autotile: subscribe failed")
-    previous = run_pass(sock, dry_run, debug)
-    repair = None
+    previous = run_pass(sock, request(sock, GET_TREE), dry_run, debug)
+    pending = None
     while True:
         kind, event = recv(events)
+        if kind == EVENT_TICK and pending and event.get("payload") == pending[0]:
+            token, old_id, new_id, recheck = pending
+            pending = None
+            tree = request(sock, GET_TREE)
+            parent = opening_parent(tree, old_id, new_id)
+            if parent and len(parent["nodes"]) == 2:
+                commands = orient_pair(parent, old_id) if recheck else []
+                if commands:
+                    if run_commands(sock, commands, dry_run, debug):
+                        pending = (token, old_id, new_id, False)
+                        request(sock, SEND_TICK, token)
+                else:
+                    previous = run_pass(sock, tree, dry_run, debug)
+            continue
         if kind != EVENT_WINDOW or event.get("change") not in TRIGGERS:
             continue
-        change, container = event["change"], event["container"]
+        change, node_id = event["change"], event["container"]["id"]
         if change == "new":
             if previous:
                 tree = request(sock, GET_TREE)
-                commands, pending = plan_open(tree, container["id"], previous)
-                if run_commands(sock, commands, dry_run, debug) and pending:
-                    repair = pending
+                commands, follow_up = plan_open(tree, node_id, previous)
+                if commands:
+                    if run_commands(sock, commands, dry_run, debug) and follow_up:
+                        # Re-read the restored rectangle in a separate IPC pass. Focus may stay
+                        # on the old tile, so a synthetic event drives the follow-up in both cases.
+                        token = f"sway-autotile:{uuid4().hex}"
+                        pending = (token, previous[0], node_id, True)
+                        request(sock, SEND_TICK, token)
+                elif follow_up:
+                    previous = run_pass(sock, tree, dry_run, debug)
             continue
-        if repair and container["id"] == repair[1]:
-            old_id, new_id, marker = repair
-            if change == "focus":
-                # Sway queues the map's focus event before our marked move. Use the restored
-                # rectangle here, then prepare the new tile on that move event.
-                parent = opening_parent(request(sock, GET_TREE), old_id, new_id)
-                if parent and len(parent["nodes"]) == 2:
-                    run_commands(sock, orient_pair(parent, old_id), dry_run, debug)
-                    continue
-            if change == "move" and marker in container.get("marks", ()):
-                repair = None
-                previous = run_pass(sock, dry_run, debug)
-                continue
+        if pending and node_id == pending[2] and change in ("focus", "move"):
+            continue  # the queued tick will prepare the focused tile after the placement check
         # Rewrapping on user moves would keep the tile in place on subsequent directional moves.
-        previous = run_pass(sock, dry_run, debug, moved=change == "move")
+        previous = run_pass(sock, request(sock, GET_TREE), dry_run, debug, moved=change == "move")
 
 
 if __name__ == "__main__":
