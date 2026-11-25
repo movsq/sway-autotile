@@ -50,9 +50,12 @@ SEEDS="1 2" tests/run sequences    # a subset
   container. `tests/run resize` covers the windows this matters for.
 - One process, one pass per event, all commands of a pass in one RUN_COMMAND: a separate autotiler +
   cleaner raced (a cleanup could remove a wrapper made for a window focused in the meantime).
-- Splits and cleanup run on every focus/close/move/floating event, not on focus only like autotiling-rs:
-  sway sends the focus event for the next window *before* the close event, so a window that grows when
-  its neighbour closes kept a split for its old shape (seeds 1, 4, 5 in `tests/run sequences`).
+- Cleanup runs on every focus/close/move/floating event, splits on focus/close/floating (not on focus
+  only like autotiling-rs): sway sends the focus event for the next window *before* the close event, so a
+  window that grows when its neighbour closes kept a split for its old shape (seeds 1, 4, 5 in
+  `tests/run sequences`). Never split on `move`: sway's `move` first takes the window out of its
+  one-child wrapper without moving it, so re-wrapping after each move kept the window in place for good
+  (`tests/scenarios.py` section 12).
 - `split`, `layout` and `split none` aimed at a con with `[con_id=]` emit no window event and don't move
   focus → no loop. `tests/scenarios.py` section 10: 30 focus commands → exactly 30 focus events.
 - No dependencies beyond the Python standard library (no i3ipc): keep it that way.

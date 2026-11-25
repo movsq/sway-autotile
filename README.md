@@ -25,7 +25,9 @@ takes half of the focused one.
   so the next window takes half of it. No splits for floating or fullscreen windows or inside tabbed or
   stacked containers. It also splits a window whose parent already has that layout. autotiling-rs
   skips that split, so there the next window gets an equal share of the parent. The split is checked
-  again after every close, move or floating toggle, because the focused window may have changed shape.
+  again after every close or floating toggle, because the focused window may have changed shape. After
+  a move it waits for the next focus change: sway's first `move` only takes a window out of its
+  one-window container, and a new container after each move would keep the window from moving.
 - Removes one-window split containers with `split none` after every focus change, close, move or
   floating toggle. It keeps:
   - the focused window's own container, which decides where the next window goes;
