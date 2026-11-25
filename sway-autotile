@@ -190,8 +190,7 @@ def orient_pair(parent, old_id):
     return [f"[con_id={old_id}] layout {want}"] if parent["layout"] != want else []
 
 
-def plan_open(tree, new_id, previous):
-    old_id, old_parent, moved_layout = previous
+def plan_open(tree, old_id, new_id):
     parent = opening_parent(tree, old_id, new_id)
     if not parent:
         return [], False
@@ -199,15 +198,15 @@ def plan_open(tree, new_id, previous):
         # Sway may leave focus on the old tile, which then needs to be prepared again.
         old_focused = parent["nodes"][0]["focused"]
         return orient_pair(parent, old_id), old_focused
-    if moved_layout and parent["id"] == old_parent:
-        # Sway inserted the new tile beside the old one. Moving the new tile into a wrapper
-        # around the old one restores the proportions of the other siblings.
-        mark = f"__sway_autotile_{uuid4().hex}"
-        old, new = f"[con_id={old_id}]", f"[con_id={new_id}]"
-        commands = [f"{old} {moved_layout}", f"{old} mark --add {mark}",
-                    f"{new} move container to mark {mark}", f"{old} unmark {mark}"]
-        return commands, True
-    return [], False
+
+    # The old tile shared its parent with other tiles before this open. Moving the new tile
+    # into a wrapper around the old one restores the siblings' proportions. Keep the parent
+    # direction for the move, then check the longer side once the old rectangle is restored.
+    mark = f"__sway_autotile_{uuid4().hex}"
+    old, new = f"[con_id={old_id}]", f"[con_id={new_id}]"
+    commands = [f"{old} {parent['layout']}", f"{old} mark --add {mark}",
+                f"{new} move container to mark {mark}", f"{old} unmark {mark}"]
+    return commands, True
 
 
 def run_pass(sock, tree, dry_run, debug, moved=False):
@@ -218,11 +217,8 @@ def run_pass(sock, tree, dry_run, debug, moved=False):
         if split:
             commands.append(split)
     run_commands(sock, commands, dry_run, debug)
-    if hit:
-        node, parent = hit
-        if not node["nodes"]:
-            layout = split_layout(node) if moved and len(parent["nodes"]) >= 2 else None
-            return node["id"], parent["id"], layout
+    if hit and not hit[0]["nodes"]:
+        return hit[0]["id"]
     return None
 
 
@@ -282,13 +278,13 @@ def main():
         if change == "new":
             if previous:
                 tree = request(sock, GET_TREE)
-                commands, follow_up = plan_open(tree, node_id, previous)
+                commands, follow_up = plan_open(tree, previous, node_id)
                 if commands:
                     if run_commands(sock, commands, dry_run, debug) and follow_up:
                         # Re-read the restored rectangle in a separate IPC pass. Focus may stay
                         # on the old tile, so a synthetic event drives the follow-up in both cases.
                         token = f"sway-autotile:{uuid4().hex}"
-                        pending = (token, previous[0], node_id, True)
+                        pending = (token, previous, node_id, True)
                         request(sock, SEND_TICK, token)
                 elif follow_up:
                     previous = run_pass(sock, tree, dry_run, debug)

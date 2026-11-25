@@ -56,11 +56,11 @@ SEEDS="1 2" tests/run sequences    # a subset
 - The daemon prepares the focused split at startup and after focus/close/floating events. Sway can
   send a focus event before a close changes the next window's shape (seeds 1, 4, 5).
 - Cleanup also runs on move. Never split on `move`: sway's first directional move can simply take
-  the window out of its wrapper, so rewrapping on every move would keep it in place. If a new window
-  joins the moved tile's parent, handle it on `new` by wrapping the old tile and moving the new tile
-  into that wrapper. The daemon queues a private IPC tick to recheck the restored rectangle and
-  prepare the next split, including when Sway keeps focus on the old tile. Scenario 12 checks
-  directional moves and the immediate open.
+  the window out of its wrapper, so rewrapping on every move would keep it in place.
+- If an opening joins the focused tile's siblings, wrap the old tile and move the new tile into the
+  wrapper. A tagged IPC tick then rechecks the restored rectangle and prepares the next split,
+  including when Sway keeps focus on the old tile. Scenarios 12–14 cover moves, manual `split none`,
+  and opens that keep focus on the old tile.
 - Sway can resize the focused tile without sending a window event. On `new`, recheck the direction
   using the rectangle occupied by the pair if it already shares a split. The F and M cases in
   `tests/run resize` check an open after a resize without refocusing, including after a move.
