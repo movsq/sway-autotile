@@ -9,6 +9,7 @@ those splits leave behind once focus moves on.
 
 ```
 sway-autotile           # the program: Python 3 stdlib only, raw sway IPC, executable, no extension
+PKGBUILD                # Arch package built from this checkout (makepkg); bump pkgver/pkgrel on release
 tests/run               # the only entry point for tests
 tests/scenarios.py      # invariants in normal use, no event loops, tab groups intact
 tests/sequences.py      # 9 seeded open/focus/close sequences (SEEDS table), placement checked every step

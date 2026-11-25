@@ -6,3 +6,8 @@ __pycache__/
 
 # personal agent notes (machine-specific, not for contributors)
 /CLAUDE.local.md
+
+# makepkg output
+/src/
+/pkg/
+/*.pkg.tar.*
