@@ -1,0 +1,223 @@
+#!/usr/bin/env python3
+"""sway-autotile — autotiling for sway that cleans up after itself.
+
+Autotiling: when a window gets focus, it is split along its longer side (`splitv` if taller than
+wide, else `splith`), so the next window halves it and windows form a spiral. Same rules as
+autotiling-rs (github.com/ammgws/autotiling-rs, `switch_splitting`): no split for floating or
+fullscreen windows or inside tabbed/stacked containers, and none when the parent already has that
+layout.
+
+Cleanup: a split wraps the window in a container with that one window inside. Once focus moves on,
+nothing opens there and the wrapper stays — an invisible extra level that makes moving windows,
+`layout tabbed` and resizing act on the wrapper instead of what you see. Closing windows leaves the
+same kind of one-child containers, sometimes in chains. After every focus/close/move/floating change
+every run of one-child split containers is removed with `split none`, except:
+  - the focused window's own wrapper (it decides where the next window goes) — chains above it go;
+  - runs containing a tabbed/stacked, focused or marked container.
+`split none` flattens *every* one-child ancestor above its target, not one level, so it is only
+sent when the whole run is plain splith/splitv — a one-tab group is never dissolved.
+
+Placement stays as with autotiling-rs alone (checked A/B in sway-sandbox): a window that lost its
+wrapper here would, under autotiling-rs, still sit in it and be halved by the next window even when
+its longer side matches the parent's layout. So such a window is split again on its next focus.
+
+One process does both, one event after another, so a cleanup can never remove a wrapper made for
+a window focused in the meantime (which two separate daemons could). `split`, `layout` and
+`split none` on a target emit no window event and move no focus, so nothing loops.
+
+Usage: sway-autotile [--once] [--dry-run] [--debug]
+  --once      one pass over the current tree, then exit
+  --dry-run   print the commands instead of running them
+  --debug     log every command to stderr
+"""
+import json
+import os
+import socket
+import struct
+import sys
+
+MAGIC = b"i3-ipc"
+HEADER = struct.Struct("=6sII")
+RUN_COMMAND, SUBSCRIBE, GET_TREE = 0, 2, 4
+EVENT_WINDOW = 0x80000003
+TRIGGERS = {"focus", "close", "move", "floating"}
+SPLITS = ("splith", "splitv")
+
+
+def connect():
+    path = os.environ.get("SWAYSOCK")
+    if not path:
+        sys.exit("sway-autotile: SWAYSOCK is not set")
+    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    s.connect(path)
+    return s
+
+
+def recv_exact(s, n):
+    buf = b""
+    while len(buf) < n:
+        chunk = s.recv(n - len(buf))
+        if not chunk:
+            raise ConnectionError("sway closed the IPC socket")
+        buf += chunk
+    return buf
+
+
+def send(s, kind, payload=""):
+    data = payload.encode()
+    s.sendall(HEADER.pack(MAGIC, len(data), kind) + data)
+
+
+def recv(s):
+    magic, length, kind = HEADER.unpack(recv_exact(s, HEADER.size))
+    if magic != MAGIC:
+        raise ConnectionError("bad IPC magic")
+    return kind, json.loads(recv_exact(s, length))
+
+
+def request(s, kind, payload=""):
+    send(s, kind, payload)
+    return recv(s)[1]
+
+
+def workspaces(tree):
+    for output in tree["nodes"]:
+        for ws in output["nodes"]:
+            if ws["type"] == "workspace" and not ws["name"].startswith("__i3"):
+                yield ws
+
+
+def is_wrapper(node):
+    """A con holding exactly one tiling child — the thing `split none` removes."""
+    return node["type"] == "con" and len(node["nodes"]) == 1
+
+
+def removable(run):
+    return all(n["layout"] in SPLITS and not n["focused"] and not n.get("marks") for n in run)
+
+
+def plan_unwrap(tree):
+    """`split none` targets: the node right under each removable run of one-child split cons."""
+    targets = []
+
+    def walk(node, ancestors):
+        for child in node["nodes"]:  # floating_nodes are left alone on purpose
+            walk(child, ancestors + [child])
+        if not ancestors:
+            return  # the workspace itself
+        parent_chain = ancestors[:-1]
+        if not parent_chain or not is_wrapper(parent_chain[-1]):
+            return  # not under a run (parent has 2+ children, or is the workspace)
+        if node["focused"]:
+            return  # the focused window/container: its wrapper stays
+        if is_wrapper(node) and node["layout"] in SPLITS and not node["nodes"][0]["focused"]:
+            return  # inside a run, not under it (the focused node's own wrapper ends a run instead)
+        run = []
+        for anc in reversed(parent_chain):
+            if not is_wrapper(anc):
+                break
+            run.append(anc)
+        if removable(run):
+            targets.append(node)
+
+    for ws in workspaces(tree):
+        walk(ws, [])
+    return targets
+
+
+def focused_tiling(tree):
+    """(focused node, its parent) in a workspace's tiling tree, or None (floating/none)."""
+    def find(node):
+        for child in node["nodes"]:
+            if child["focused"]:
+                return child, node
+            hit = find(child)
+            if hit:
+                return hit
+        return None
+
+    for ws in workspaces(tree):
+        hit = find(ws)
+        if hit:
+            return hit
+    return None
+
+
+def plan_split(tree, unwrapped):
+    """The autotiling split for the focused node, or None."""
+    hit = focused_tiling(tree)
+    if not hit:
+        return None
+    node, parent = hit
+    was_unwrapped = node["id"] in unwrapped
+    unwrapped.discard(node["id"])
+    if node.get("fullscreen_mode") or (node.get("percent") or 0) > 1.0:
+        return None
+    if parent["layout"] not in SPLITS:
+        return None  # tabbed/stacked: not autotiled
+    want = "splitv" if node["rect"]["height"] > node["rect"]["width"] else "splith"
+    if want != parent["layout"]:
+        if is_wrapper(parent):
+            # Its own wrapper points the wrong way: turn it instead of nesting a new one inside
+            # (autotiling-rs nests; the next window lands the same either way).
+            return f"[con_id={node['id']}] layout {want}"
+        return f"[con_id={node['id']}] {want}"
+    if was_unwrapped and len(parent["nodes"]) >= 2:
+        return f"[con_id={node['id']}] {want}"  # see "Placement" in the docstring
+    return None
+
+
+def run_pass(sock, unwrapped, autotile, dry_run, debug):
+    tree = request(sock, GET_TREE)
+    targets = plan_unwrap(tree)
+    commands = [f"[con_id={t['id']}] split none" for t in targets]
+    unwrapped.update(t["id"] for t in targets if not t["nodes"])
+    if autotile:
+        split = plan_split(tree, unwrapped)
+        if split:
+            commands.append(split)
+    if not commands:
+        return
+    command = "; ".join(commands)
+    if dry_run:
+        print(command, flush=True)
+        return
+    results = request(sock, RUN_COMMAND, command)
+    if debug or not all(r.get("success") for r in results):
+        print(f"sway-autotile: {command} -> {results}", file=sys.stderr, flush=True)
+
+
+def main():
+    args = set(sys.argv[1:])
+    if {"-h", "--help"} & args:
+        print("Usage: " + __doc__.split("Usage:")[1].strip())
+        return
+    unknown = args - {"--once", "--dry-run", "--debug"}
+    if unknown:
+        sys.exit(f"sway-autotile: unknown option(s): {' '.join(sorted(unknown))} (see --help)")
+    dry_run, debug = "--dry-run" in args, "--debug" in args
+
+    unwrapped = set()  # windows whose wrapper we removed (see "Placement")
+    sock = connect()
+    if "--once" in args:
+        run_pass(sock, unwrapped, True, dry_run, debug)
+        return
+
+    events = connect()
+    if not request(events, SUBSCRIBE, '["window"]').get("success"):
+        sys.exit("sway-autotile: subscribe failed")
+    run_pass(sock, unwrapped, False, dry_run, debug)
+    while True:
+        kind, event = recv(events)
+        if kind != EVENT_WINDOW or event.get("change") not in TRIGGERS:
+            continue
+        if event["change"] == "close":
+            unwrapped.discard(event["container"]["id"])
+        run_pass(sock, unwrapped, event["change"] == "focus", dry_run, debug)
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except (ConnectionError, BrokenPipeError, KeyboardInterrupt):
+        pass

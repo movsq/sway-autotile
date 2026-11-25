@@ -1,0 +1,86 @@
+#!/usr/bin/env bash
+# tests/run — run the tests in sway-sandbox (headless sway from my-dots; never the real session).
+#
+#   tests/run [all]        scenarios + sequences + resize against ./sway-autotile (~6 min)
+#   tests/run scenarios    invariants in normal use, no event loops, tab groups intact (~1 min)
+#   tests/run sequences    9 seeded open/focus/close sequences, geometry = autotiling-rs baseline (~4 min)
+#   tests/run resize       the case where cleanup could change placement = autotiling-rs baseline
+#   tests/run baseline     record baseline/ again with autotiling-rs alone (needs autotiling-rs)
+#
+# Env: SEEDS="1 2" limits the sequences; KEEP=1 keeps the output dir.
+# Needs: sway-sandbox (+ sway, kitty) on PATH.
+# shellcheck disable=SC2329  # cleanup and the test functions are called indirectly (trap, "$1")
+set -uo pipefail
+
+TESTS=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+ROOT=$(dirname "$TESTS")
+OUT=$(mktemp -d -p "${XDG_RUNTIME_DIR:-/tmp}" sway-autotile-tests.XXXXXX)
+SEEDS=${SEEDS:-"1 2 3 4 5 6 7 8 9"}
+FAILED=0
+
+command -v sway-sandbox >/dev/null || { echo "tests/run: sway-sandbox not on PATH" >&2; exit 2; }
+cleanup() {
+    sway-sandbox stop >/dev/null 2>&1
+    if [[ ${KEEP:-} == 1 ]]; then echo "output kept in $OUT"; else rm -rf "$OUT"; fi
+}
+trap cleanup EXIT
+
+# case NAME AUTOTILER SCRIPT ARGS… — fresh sandbox, event logger, autotiler, then the test script.
+case_() {
+    local name=$1 autotiler=$2; shift 2
+    sway-sandbox stop >/dev/null 2>&1
+    sway-sandbox start >/dev/null 2>&1 || { echo "FAIL $name: sandbox did not start"; FAILED=1; return; }
+    : >"$OUT/$name.events"
+    sway-sandbox spawn python3 -B "$TESTS/events.py" "$OUT/$name.events"
+    sway-sandbox spawn sh -c "echo \$\$ > '$OUT/$name.pid'; exec $autotiler 2> '$OUT/$name.err'"
+    sleep 1
+    sway-sandbox run env AUTOTILE_EVENTS="$OUT/$name.events" python3 -B "$@" >"$OUT/$name.out" 2>&1
+    local rc=$?
+    grep -E '^FAIL' "$OUT/$name.out"
+    [[ $rc != 0 ]] && { echo "FAIL $name: test script exited $rc"; tail -3 "$OUT/$name.out"; FAILED=1; }
+    if ! kill -0 "$(cat "$OUT/$name.pid" 2>/dev/null)" 2>/dev/null; then
+        echo "FAIL $name: the autotiler died"; FAILED=1
+    fi
+    if grep -qE "Traceback|'success': False" "$OUT/$name.err"; then
+        echo "FAIL $name: errors from the autotiler:"; grep -E "Traceback|'success': False" "$OUT/$name.err" | head -3; FAILED=1
+    fi
+    local passed; passed=$(grep -c '^PASS' "$OUT/$name.out")
+    [[ $passed != 0 ]] && echo "     $name: $passed checks passed"
+    return 0
+}
+
+autotile="python3 -B '$ROOT/sway-autotile' --debug"
+
+scenarios() { echo "== scenarios"; case_ scenarios "$autotile" "$TESTS/scenarios.py"; }
+
+sequences() {
+    echo "== sequences (seeds: $SEEDS)"
+    for s in $SEEDS; do
+        case_ "seq-$s" "$autotile" "$TESTS/sequences.py" "$s" "$OUT/seq-$s.jsonl" --check
+        python3 -B "$TESTS/compare.py" seq "$TESTS/baseline/seq-$s.jsonl" "$OUT/seq-$s.jsonl" || FAILED=1
+    done
+}
+
+resize() {
+    echo "== resize"
+    case_ resize "$autotile" "$TESTS/resize.py" "$OUT/resize.json"
+    python3 -B "$TESTS/compare.py" resize "$TESTS/baseline/resize.json" "$OUT/resize.json" || FAILED=1
+}
+
+baseline() {
+    command -v autotiling-rs >/dev/null || { echo "baseline needs autotiling-rs installed" >&2; exit 2; }
+    echo "== baseline with $(autotiling-rs --version)"
+    for s in $SEEDS; do
+        case_ "base-seq-$s" autotiling-rs "$TESTS/sequences.py" "$s" "$TESTS/baseline/seq-$s.jsonl"
+    done
+    case_ base-resize autotiling-rs "$TESTS/resize.py" "$TESTS/baseline/resize.json"
+}
+
+case ${1:-all} in
+    all) scenarios; sequences; resize ;;
+    scenarios|sequences|resize|baseline) "$1" ;;
+    *) sed -n '2,10p' "$0"; exit 2 ;;
+esac
+echo
+[[ $FAILED == 0 ]] && echo "ALL PASSED" || echo "SOME TESTS FAILED"
+exit $FAILED
