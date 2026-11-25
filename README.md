@@ -21,18 +21,12 @@ half of the focused one, also where autotiling-rs would give it a smaller share.
 
 ## What it does
 
-- Splits the focused window along its longer side, `splitv` if it's taller than wide, else `splith`,
-  so the next window takes half of it. No splits for floating or fullscreen windows or inside tabbed or
-  stacked containers. It also splits a window whose parent already has that layout. autotiling-rs
-  skips that split, so there the next window gets an equal share of the parent. The split is checked
-  again after every close or floating toggle, because the focused window may have changed shape. After
-  a move it waits for the next focus change: sway's first `move` only takes a window out of its
-  one-window container, and a new container after each move would keep the window from moving. Two
-  side effects:
-  - a window opened right after a move, before focus changes, gets an equal share of the moved
-    window's parent instead of half of the moved window;
-  - the first `move` after a window gets focus only takes it out of its container, so it takes a
-    second press to move. autotiling-rs does the same for most windows.
+- Splits the focused tile along its longer side so the next window takes half of it. Floating,
+  fullscreen, tabbed, and stacked windows keep Sway's native layout behavior.
+- Prepares the focused tile at startup and after focus, close, and floating changes. When a window
+  opens, it checks the split direction again in case the focused tile was resized. After a move, it
+  waits until another window opens or focus changes. Sway's first directional move can take a tile
+  out of its split without changing position. Press the key again to move the tile.
 - Removes one-window split containers with `split none` after every focus change, close, move or
   floating toggle. It keeps:
   - the focused window's own container, which decides where the next window goes;
@@ -90,10 +84,11 @@ package:
 exec ~/.local/bin/sway-autotile
 ```
 
-To start it without logging out:
+To start it without logging out, run the command for your installation.
 
 ```bash
-swaymsg exec ~/.local/bin/sway-autotile
+swaymsg exec ~/.local/bin/sway-autotile   # script installed manually
+swaymsg exec sway-autotile               # Arch package
 ```
 
 `swaymsg reload` neither starts it again nor stops it, because sway runs `exec` lines only at startup.

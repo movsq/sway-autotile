@@ -4,6 +4,8 @@ let the next window join the parent (an equal share of it). Here it must halve t
   H  a wide window in a splith parent, after its wrapper was cleaned up (workspace 1)
   N  a wide window in a splith parent that never had a wrapper (workspace 2)
   V  a tall window in a splitv parent, after its wrapper was cleaned up (workspace 3)
+  F  a focused window resized from tall to wide before opening another (workspace 4)
+  M  a focused window moved and resized before opening another (workspace 5)
 """
 from lib import check, check_open, cmd, finish, show, spawn, tree, wid
 
@@ -43,4 +45,29 @@ spawn("s")
 t = check("V")
 check_open(before, t, "s", "V")
 show(t)
+# F: resizing the currently focused window can leave its wrapper pointing the old way.
+cmd("workspace 4")
+spawn("a3")
+spawn("b3")
+cmd(f"[con_id={wid('a3')}] focus")
+cmd(f"[con_id={wid('a3')}] resize set width 1800 px")
+before = tree()
+spawn("c3")
+check_open(before, check("F"), "c3", "F")
+
+# M: recheck the direction using the restored rectangle if the tile was resized after the move.
+cmd("workspace 5")
+spawn("a4")
+spawn("b4")
+cmd(f"[con_id={wid('a4')}] focus")
+cmd("move right")
+cmd("move right")
+cmd(f"[con_id={wid('a4')}] resize set width 1800 px")
+before = tree()
+spawn("c4")
+check_open(before, check("M"), "c4", "M")
+before = tree()
+spawn("d4")
+check_open(before, check("M next open"), "d4", "M next open")
+
 finish()
