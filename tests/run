@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 # tests/run — run the tests, each case in its own headless sway (never the session you're in).
 #
-#   tests/run [all]        scenarios + sequences + resize against ./sway-autotile (~4.5 min)
+#   tests/run [all]        scenarios + sequences + resize + cli against ./sway-autotile (~4.5 min)
 #   tests/run scenarios    invariants in normal use, no event loops, tab groups intact
 #   tests/run sequences    9 seeded open/focus/close sequences, placement rules checked at every step
 #   tests/run resize       windows whose longer side already matches their parent's layout
+#   tests/run cli          every documented way to run it: --help, --once, --dry-run, errors
 #
 # Env: SEEDS="1 2" limits the sequences; KEEP=1 keeps the output dir;
 #      AUTOTILE_TEST_TERMINAL (default kitty) = the client that opens windows (needs a --title option).
@@ -67,10 +68,12 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# case_ NAME SCRIPT ARGS… — fresh sway, event logger, ./sway-autotile, then the test script.
-# Runs in a subshell so the sway sockets never leak into the next case.
+# case_ NAME SCRIPT ARGS… — fresh sway, event logger, ./sway-autotile --debug, then the test script;
+# then sway stops and the daemon must exit with it. DAEMON=0 case_ … starts no daemon (the script runs
+# the program itself). Runs in a subshell so the sway sockets never leak into the next case.
 case_() {
     local name=$1; shift
+    local daemon=${DAEMON:-1}
     local dir="$OUT/$name"
     mkdir -p "$dir"
     (
@@ -78,17 +81,29 @@ case_() {
         trap stop_sway EXIT
         : >"$dir/events"
         python3 -B "$TESTS/events.py" "$dir/events" &
-        python3 -B "$ROOT/sway-autotile" --debug 2>"$dir/autotiler.err" &
-        local pid=$! rc=0 failed=0
+        local pid="" rc=0 failed=0
+        : >"$dir/autotiler.err"
+        if [[ $daemon == 1 ]]; then
+            python3 -B "$ROOT/sway-autotile" --debug 2>"$dir/autotiler.err" &
+            pid=$!
+        fi
         sleep 1
         AUTOTILE_EVENTS="$dir/events" python3 -B "$@" >"$dir/out" 2>&1 || rc=$?
         grep -E '^FAIL ' "$dir/out"
         if [[ $rc != 0 ]]; then echo "FAIL $name: test script exited $rc"; tail -3 "$dir/out"; failed=1; fi
-        if ! kill -0 "$pid" 2>/dev/null; then echo "FAIL $name: the autotiler died"; failed=1; fi
+        if [[ -n $pid ]] && ! kill -0 "$pid" 2>/dev/null; then echo "FAIL $name: the autotiler died"; failed=1; fi
         if grep -qE "Traceback|'success': False" "$dir/autotiler.err"; then
             echo "FAIL $name: errors from the autotiler:"
             grep -E "Traceback|'success': False" "$dir/autotiler.err" | head -3
             failed=1
+        fi
+        if [[ -n $pid ]] && kill -0 "$pid" 2>/dev/null; then
+            stop_sway                        # "it exits when sway does"
+            local i
+            for ((i = 0; i < 30; i++)); do kill -0 "$pid" 2>/dev/null || break; sleep 0.1; done
+            if kill -0 "$pid" 2>/dev/null; then
+                echo "FAIL $name: the autotiler kept running after sway exited"; kill "$pid"; failed=1
+            fi
         fi
         local passed; passed=$(grep -c '^PASS' "$dir/out")
         [[ $passed != 0 ]] && echo "     $name: $passed checks passed"
@@ -106,10 +121,12 @@ sequences() {
 
 resize() { echo "== resize"; case_ resize "$TESTS/resize.py"; }
 
+cli() { echo "== cli"; DAEMON=0 case_ cli "$TESTS/cli.py"; }
+
 case ${1:-all} in
-    all) scenarios; sequences; resize ;;
-    scenarios|sequences|resize) "$1" ;;
-    *) sed -n '2,11p' "$0"; exit 2 ;;
+    all) scenarios; sequences; resize; cli ;;
+    scenarios|sequences|resize|cli) "$1" ;;
+    *) sed -n '2,12p' "$0"; exit 2 ;;
 esac
 echo
 if [[ $FAILED == 0 ]]; then echo "ALL PASSED"; else echo "SOME TESTS FAILED"; fi

@@ -195,9 +195,7 @@ def main():
 
     sock = connect()
     if "--once" in args:
-        # No split after a move: sway's `move` first takes a window out of its one-child wrapper
-        # without moving it, so a wrapper made after every move would keep the window from moving.
-        run_pass(sock, event["change"] != "move", dry_run, debug)
+        run_pass(sock, True, dry_run, debug)
         return
 
     events = connect()

@@ -14,6 +14,7 @@ tests/run               # the only entry point for tests
 tests/scenarios.py      # invariants in normal use, no event loops, tab groups intact
 tests/sequences.py      # 9 seeded open/focus/close sequences (SEEDS table), placement checked every step
 tests/resize.py         # windows whose longer side already matches their parent's layout
+tests/cli.py            # every documented way to run it: --help, --once, --dry-run, plain daemon, errors
 tests/lib.py, events.py # helpers and the placement checks; event logger (counts focus events)
 ```
 
@@ -22,7 +23,7 @@ tests/lib.py, events.py # helpers and the placement checks; event logger (counts
 ```bash
 ./sway-autotile --once --dry-run   # safe in a live session: prints what it would do, changes nothing
 ./sway-autotile --debug            # logs every command to stderr — run it in a test sway, not a live session
-tests/run                          # all tests, ~4.5 min; or: scenarios | sequences | resize
+tests/run                          # all tests, ~4.5 min; or: scenarios | sequences | resize | cli
 SEEDS="1 2" tests/run sequences    # a subset
 ```
 
@@ -36,6 +37,8 @@ SEEDS="1 2" tests/run sequences    # a subset
   (`lib.check_open`): after an open, the new window and the window focused before fill that window's old
   rectangle, half each along its longer side, and no other window moves; a focus moves nothing; a close
   shrinks nothing. A change meant to alter placement changes those checks — say so first.
+- Every documented option, combination and exit path (README "Usage") has a section in `tests/cli.py`, and
+  `tests/run` checks that the daemon exits when sway does. A new option or exit path gets a section there.
 - `lib.GAP` must equal `gaps inner` in the sway config `tests/run` writes. Keep a seed's action sequence
   in `sequences.py` unchanged, so failures stay comparable between runs.
 - `shellcheck tests/run` for the runner; run Python with `python3 -B` (no `__pycache__`).
@@ -55,7 +58,8 @@ SEEDS="1 2" tests/run sequences    # a subset
   window that grows when its neighbour closes kept a split for its old shape (seeds 1, 4, 5 in
   `tests/run sequences`). Never split on `move`: sway's `move` first takes the window out of its
   one-child wrapper without moving it, so re-wrapping after each move kept the window in place for good
-  (`tests/scenarios.py` section 12).
+  (`tests/scenarios.py` section 12). The cost: a window opened right after a move, before any focus
+  change, gets an equal share of the moved window's parent (no hook runs between the move and the open).
 - `split`, `layout` and `split none` aimed at a con with `[con_id=]` emit no window event and don't move
   focus → no loop. `tests/scenarios.py` section 10: 30 focus commands → exactly 30 focus events.
 - No dependencies beyond the Python standard library (no i3ipc): keep it that way.

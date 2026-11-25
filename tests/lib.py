@@ -7,6 +7,7 @@ import time
 FAILS = []
 EVENTS = os.environ.get("AUTOTILE_EVENTS", "")  # file written by events.py, one "change id" per line
 TERMINAL = os.environ.get("AUTOTILE_TEST_TERMINAL", "kitty")
+PROGRAM = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "sway-autotile")
 GAP = 8  # "gaps inner" in the sway config that `run` writes; with smart_gaps a lone window has none
 
 

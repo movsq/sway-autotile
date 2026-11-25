@@ -16,8 +16,8 @@ no window opens there, the wrapper stays. You can't see it, but `layout tabbed` 
 group with a single tab, and `move` and `resize` work on a level of the tree you didn't know was there.
 Closing windows leaves the same kind of one-window containers behind, sometimes nested.
 
-sway-autotile removes those containers as soon as they stop doing anything, and a new window always
-takes half of the focused one.
+sway-autotile removes those containers as soon as they stop doing anything, and a new window takes
+half of the focused one, also where autotiling-rs would give it a smaller share.
 
 ## What it does
 
@@ -27,7 +27,12 @@ takes half of the focused one.
   skips that split, so there the next window gets an equal share of the parent. The split is checked
   again after every close or floating toggle, because the focused window may have changed shape. After
   a move it waits for the next focus change: sway's first `move` only takes a window out of its
-  one-window container, and a new container after each move would keep the window from moving.
+  one-window container, and a new container after each move would keep the window from moving. Two
+  side effects:
+  - a window opened right after a move, before focus changes, gets an equal share of the moved
+    window's parent instead of half of the moved window;
+  - the first `move` after a window gets focus only takes it out of its container, so it takes a
+    second press to move. autotiling-rs does the same for most windows.
 - Removes one-window split containers with `split none` after every focus change, close, move or
   floating toggle. It keeps:
   - the focused window's own container, which decides where the next window goes;
@@ -113,6 +118,7 @@ tests/run              # everything, about 4.5 minutes
 tests/run scenarios    # invariants in normal use: no leftover containers, no event loops, tab groups intact
 tests/run sequences    # 9 seeded open/focus/close sequences; placement checked after every step
 tests/run resize       # windows whose longer side already matches their parent's layout
+tests/run cli          # every option and error exit: --help, --once, --dry-run, no SWAYSOCK
 ```
 
 Each case starts its own headless, software-rendered sway, so nothing happens in your session. The tests
