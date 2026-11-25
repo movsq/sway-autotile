@@ -14,6 +14,7 @@ tests/run               # the only entry point for tests
 tests/scenarios.py      # invariants in normal use, no event loops, tab groups intact
 tests/sequences.py      # 9 seeded open/focus/close sequences (SEEDS table), placement checked every step
 tests/resize.py         # windows whose longer side already matches their parent's layout
+tests/keys.py           # one press of a `move` key binding moves the window (wtype presses the keys)
 tests/cli.py            # every documented way to run it: --help, --once, --dry-run, plain daemon, errors
 tests/lib.py, events.py # helpers and the placement checks; event logger (counts focus events)
 ```
@@ -23,14 +24,14 @@ tests/lib.py, events.py # helpers and the placement checks; event logger (counts
 ```bash
 ./sway-autotile --once --dry-run   # safe in a live session: prints what it would do, changes nothing
 ./sway-autotile --debug            # logs every command to stderr — run it in a test sway, not a live session
-tests/run                          # all tests, ~4.5 min; or: scenarios | sequences | resize | cli
+tests/run                          # all tests, ~5 min; or: scenarios | sequences | resize | keys | cli
 SEEDS="1 2" tests/run sequences    # a subset
 ```
 
 ## Testing
 
 - Needs sway, python3 and kitty (`AUTOTILE_TEST_TERMINAL` picks another terminal with a `--title`
-  option). Each case starts its own headless, software-rendered sway (`WLR_BACKENDS=headless`,
+  option); `tests/run keys` also needs wtype and is skipped without it. Each case starts its own headless, software-rendered sway (`WLR_BACKENDS=headless`,
   `WLR_RENDERER=pixman`) with a fixed 2560x1440 output and config, detached from the session it runs in.
   Never point the program or the tests at a live session — windows would move under the user.
 - Every change to `sway-autotile` must pass `tests/run` (all). The placement rule is checked directly
@@ -56,8 +57,16 @@ SEEDS="1 2" tests/run sequences    # a subset
   exception is the open repair below: its follow-up pass runs on the daemon's own tagged tick.
 - The daemon prepares the focused split at startup and after focus/close/floating events. Sway can
   send a focus event before a close changes the next window's shape (seeds 1, 4, 5).
-- Cleanup also runs on move. Never split on `move`: sway's first directional move can simply take
-  the window out of its wrapper, so rewrapping on every move would keep it in place.
+- Cleanup also runs on move. Never split on a `move` event: sway's directional move of a wrapped
+  tile only takes it out of its wrapper, into the wrapper's slot (and resets the siblings' sizes, so
+  the tile's rect can change). Rewrapping on every move would keep it in place for good. A key
+  binding is the exception: its `binding` event follows its move event, so if that move only
+  unwrapped the tile, the daemon sends the same `move` again and then wraps the tile. swaymsg,
+  scripts and mouse drags send no binding event and keep the old rule.
+- Whether a move only unwrapped is decided from the event stream, not from a tree read alone: a
+  tree read after a key press can already show the next press. After each split the daemon sends a
+  tick naming the tile and its wrapper's slot; the tile's next move event consumes it and only
+  unwrapped if the tile is now in that slot. `tests/run keys` K3 sends two presses at once.
 - If an opening joins the focused tile's siblings, wrap the old tile and move the new tile into the
   wrapper. A tagged IPC tick then rechecks the restored rectangle and prepares the next split,
   including when Sway keeps focus on the old tile. Scenarios 12–14 cover moves, manual `split none`,
@@ -68,5 +77,6 @@ SEEDS="1 2" tests/run sequences    # a subset
 - `split`, `layout` and `split none` aimed at a con with `[con_id=]` emit no window event and don't move
   focus → no loop. `tests/scenarios.py` section 10: 30 focus commands → exactly 30 focus events. The open
   repair is the exception: its `mark` and `move container to mark` emit window events, so the daemon
-  skips the new window's focus and move events until its tick arrives.
+  skips the new window's focus and move events until its tick arrives. The repeated key move emits
+  a move event but no binding event, and only binding events repeat moves.
 - No dependencies beyond the Python standard library (no i3ipc): keep it that way.

@@ -1,15 +1,16 @@
 #!/usr/bin/env bash
 # tests/run — run the tests, each case in its own headless sway (never the session you're in).
 #
-#   tests/run [all]        scenarios + sequences + resize + cli against ./sway-autotile (~4.5 min)
+#   tests/run [all]        scenarios + sequences + resize + keys + cli against ./sway-autotile (~5 min)
 #   tests/run scenarios    invariants in normal use, no event loops, tab groups intact
 #   tests/run sequences    9 seeded open/focus/close sequences, placement rules checked at every step
 #   tests/run resize       windows whose longer side already matches their parent's layout
+#   tests/run keys         one key press of a `move` binding moves the window (needs wtype)
 #   tests/run cli          every documented way to run it: --help, --once, --dry-run, errors
 #
 # Env: SEEDS="1 2" limits the sequences; KEEP=1 keeps the output dir;
 #      AUTOTILE_TEST_TERMINAL (default kitty) = the client that opens windows (needs a --title option).
-# Needs: sway, python3, kitty (or the terminal above).
+# Needs: sway, python3, kitty (or the terminal above); wtype for `keys` (skipped without it).
 # shellcheck disable=SC2329  # cleanup and the test functions are called indirectly (trap, "$1")
 set -uo pipefail
 
@@ -36,6 +37,10 @@ default_border pixel 2
 gaps inner 8
 smart_gaps on
 font pango:monospace 10
+bindsym Mod4+Shift+h move left
+bindsym Mod4+Shift+j move down
+bindsym Mod4+Shift+k move up
+bindsym Mod4+Shift+l move right
 exec sh -c 'env | grep -E "^(WAYLAND_DISPLAY|SWAYSOCK)=" > "$dir/env.tmp" && mv "$dir/env.tmp" "$dir/env"'
 EOF
     env -u WAYLAND_DISPLAY -u SWAYSOCK -u I3SOCK -u DISPLAY \
@@ -121,12 +126,17 @@ sequences() {
 
 resize() { echo "== resize"; case_ resize "$TESTS/resize.py"; }
 
+keys() {
+    echo "== keys"
+    if command -v wtype >/dev/null; then case_ keys "$TESTS/keys.py"; else echo "SKIP keys: wtype not found"; fi
+}
+
 cli() { echo "== cli"; DAEMON=0 case_ cli "$TESTS/cli.py"; }
 
 case ${1:-all} in
-    all) scenarios; sequences; resize; cli ;;
-    scenarios|sequences|resize|cli) "$1" ;;
-    *) sed -n '2,12p' "$0"; exit 2 ;;
+    all) scenarios; sequences; resize; keys; cli ;;
+    scenarios|sequences|resize|keys|cli) "$1" ;;
+    *) sed -n '2,13p' "$0"; exit 2 ;;
 esac
 echo
 if [[ $FAILED == 0 ]]; then echo "ALL PASSED"; else echo "SOME TESTS FAILED"; fi
