@@ -1,8 +1,8 @@
 """Scenario suite: invariants after every step of normal use, no event loops, tab groups intact."""
 import time
 
-from lib import (by_title, check, check_open, cmd, finish, focus_events, focused_window, geom, msg, parents, result, show,
-                 spawn, tree, wid, windows)
+from lib import (by_title, check, check_open, cmd, finish, focus_events, focused_window, geom, msg, parents,
+                 result, show, spawn, tree, wid, windows)
 
 
 def focus_and_check(title, label):
