@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
 """sway-autotile — autotiling for sway that cleans up after itself.
 
-Autotiling: when a window gets focus, it is split along its longer side (`splitv` if taller than
-wide, else `splith`), so the next window halves it and windows form a spiral. Same rules as
-autotiling-rs (github.com/ammgws/autotiling-rs, `switch_splitting`): no split for floating or
-fullscreen windows or inside tabbed/stacked containers, and none when the parent already has that
-layout.
+Autotiling: the focused window is split along its longer side (`splitv` if taller than wide, else
+`splith`), so the next window takes half of it and windows form a spiral. This is decided again after
+every focus/close/move/floating change: sway sends the focus event for the next window before the
+close event, so a window that grows when its neighbour closes would otherwise keep a split for its
+old shape. No split for floating or fullscreen windows or inside tabbed/stacked containers. The
+direction rule comes from autotiling-rs (github.com/ammgws/autotiling-rs); unlike autotiling-rs it
+also splits a window whose parent already has that layout, so a new window always halves the focused
+one instead of sometimes getting an equal share of the parent.
 
 Cleanup: a split wraps the window in a container with that one window inside. Once focus moves on,
 nothing opens there and the wrapper stays — an invisible extra level that makes moving windows,
@@ -16,10 +19,6 @@ every run of one-child split containers is removed with `split none`, except:
   - runs containing a tabbed/stacked, focused or marked container.
 `split none` flattens *every* one-child ancestor above its target, not one level, so it is only
 sent when the whole run is plain splith/splitv — a one-tab group is never dissolved.
-
-Placement stays as with autotiling-rs alone (checked A/B in sway-sandbox): a window that lost its
-wrapper here would, under autotiling-rs, still sit in it and be halved by the next window even when
-its longer side matches the parent's layout. So such a window is split again on its next focus.
 
 One process does both, one event after another, so a cleanup can never remove a wrapper made for
 a window focused in the meantime (which two separate daemons could). `split`, `layout` and
@@ -143,37 +142,33 @@ def focused_tiling(tree):
     return None
 
 
-def plan_split(tree, unwrapped):
+def plan_split(tree):
     """The autotiling split for the focused node, or None."""
     hit = focused_tiling(tree)
     if not hit:
         return None
     node, parent = hit
-    was_unwrapped = node["id"] in unwrapped
-    unwrapped.discard(node["id"])
     if node.get("fullscreen_mode") or (node.get("percent") or 0) > 1.0:
         return None
     if parent["layout"] not in SPLITS:
         return None  # tabbed/stacked: not autotiled
     want = "splitv" if node["rect"]["height"] > node["rect"]["width"] else "splith"
-    if want != parent["layout"]:
-        if is_wrapper(parent):
-            # Its own wrapper points the wrong way: turn it instead of nesting a new one inside
-            # (autotiling-rs nests; the next window lands the same either way).
-            return f"[con_id={node['id']}] layout {want}"
+    if len(parent["nodes"]) >= 2:
+        # Wrap it even when the parent already has that layout: otherwise the next window would
+        # join the parent and get an equal share of it instead of half of this window.
         return f"[con_id={node['id']}] {want}"
-    if was_unwrapped and len(parent["nodes"]) >= 2:
-        return f"[con_id={node['id']}] {want}"  # see "Placement" in the docstring
-    return None
+    if parent["layout"] == want:
+        return None  # alone in a container that already splits the right way
+    if is_wrapper(parent):
+        return f"[con_id={node['id']}] layout {want}"  # turn its wrapper instead of nesting another
+    return f"[con_id={node['id']}] {want}"  # alone on the workspace: sway sets the workspace layout
 
 
-def run_pass(sock, unwrapped, autotile, dry_run, debug):
+def run_pass(sock, autotile, dry_run, debug):
     tree = request(sock, GET_TREE)
-    targets = plan_unwrap(tree)
-    commands = [f"[con_id={t['id']}] split none" for t in targets]
-    unwrapped.update(t["id"] for t in targets if not t["nodes"])
+    commands = [f"[con_id={t['id']}] split none" for t in plan_unwrap(tree)]
     if autotile:
-        split = plan_split(tree, unwrapped)
+        split = plan_split(tree)
         if split:
             commands.append(split)
     if not commands:
@@ -197,23 +192,20 @@ def main():
         sys.exit(f"sway-autotile: unknown option(s): {' '.join(sorted(unknown))} (see --help)")
     dry_run, debug = "--dry-run" in args, "--debug" in args
 
-    unwrapped = set()  # windows whose wrapper we removed (see "Placement")
     sock = connect()
     if "--once" in args:
-        run_pass(sock, unwrapped, True, dry_run, debug)
+        run_pass(sock, True, dry_run, debug)
         return
 
     events = connect()
     if not request(events, SUBSCRIBE, '["window"]').get("success"):
         sys.exit("sway-autotile: subscribe failed")
-    run_pass(sock, unwrapped, False, dry_run, debug)
+    run_pass(sock, False, dry_run, debug)
     while True:
         kind, event = recv(events)
         if kind != EVENT_WINDOW or event.get("change") not in TRIGGERS:
             continue
-        if event["change"] == "close":
-            unwrapped.discard(event["container"]["id"])
-        run_pass(sock, unwrapped, event["change"] == "focus", dry_run, debug)
+        run_pass(sock, True, dry_run, debug)
 
 
 if __name__ == "__main__":

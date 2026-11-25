@@ -3,9 +3,8 @@
 #
 #   tests/run [all]        scenarios + sequences + resize against ./sway-autotile (~4.5 min)
 #   tests/run scenarios    invariants in normal use, no event loops, tab groups intact
-#   tests/run sequences    9 seeded open/focus/close sequences, geometry = autotiling-rs baseline
-#   tests/run resize       the case where cleanup could change placement = autotiling-rs baseline
-#   tests/run baseline     record tests/baseline/ again with autotiling-rs alone (needs autotiling-rs)
+#   tests/run sequences    9 seeded open/focus/close sequences, placement rules checked at every step
+#   tests/run resize       windows whose longer side already matches their parent's layout
 #
 # Env: SEEDS="1 2" limits the sequences; KEEP=1 keeps the output dir;
 #      AUTOTILE_TEST_TERMINAL (default kitty) = the client that opens windows (needs a --title option).
@@ -27,6 +26,7 @@ done
 
 # A headless sway with a fixed output and config, software-rendered (no GPU), detached from the
 # session this runs in. Sets SWAY_PID, WAYLAND_DISPLAY, SWAYSOCK for the case.
+# The placement checks in lib.py depend on this config: GAP there = "gaps inner" here.
 start_sway() {
     local dir=$1
     cat >"$dir/config" <<EOF
@@ -67,10 +67,10 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# case_ NAME AUTOTILER SCRIPT ARGS… — fresh sway, event logger, autotiler, then the test script.
+# case_ NAME SCRIPT ARGS… — fresh sway, event logger, ./sway-autotile, then the test script.
 # Runs in a subshell so the sway sockets never leak into the next case.
 case_() {
-    local name=$1 autotiler=$2; shift 2
+    local name=$1; shift
     local dir="$OUT/$name"
     mkdir -p "$dir"
     (
@@ -78,8 +78,7 @@ case_() {
         trap stop_sway EXIT
         : >"$dir/events"
         python3 -B "$TESTS/events.py" "$dir/events" &
-        # shellcheck disable=SC2086  # the autotiler command is meant to be word-split
-        $autotiler 2>"$dir/autotiler.err" &
+        python3 -B "$ROOT/sway-autotile" --debug 2>"$dir/autotiler.err" &
         local pid=$! rc=0 failed=0
         sleep 1
         AUTOTILE_EVENTS="$dir/events" python3 -B "$@" >"$dir/out" 2>&1 || rc=$?
@@ -97,39 +96,20 @@ case_() {
     ) || FAILED=1
 }
 
-autotile="python3 -B $ROOT/sway-autotile --debug"
-
-scenarios() { echo "== scenarios"; case_ scenarios "$autotile" "$TESTS/scenarios.py"; }
+scenarios() { echo "== scenarios"; case_ scenarios "$TESTS/scenarios.py"; }
 
 sequences() {
     echo "== sequences (seeds: $SEEDS)"
     local s
-    for s in $SEEDS; do
-        case_ "seq-$s" "$autotile" "$TESTS/sequences.py" "$s" "$OUT/seq-$s.jsonl" --check
-        python3 -B "$TESTS/compare.py" seq "$TESTS/baseline/seq-$s.jsonl" "$OUT/seq-$s.jsonl" || FAILED=1
-    done
+    for s in $SEEDS; do case_ "seq-$s" "$TESTS/sequences.py" "$s"; done
 }
 
-resize() {
-    echo "== resize"
-    case_ resize "$autotile" "$TESTS/resize.py" "$OUT/resize.json"
-    python3 -B "$TESTS/compare.py" resize "$TESTS/baseline/resize.json" "$OUT/resize.json" || FAILED=1
-}
-
-baseline() {
-    command -v autotiling-rs >/dev/null || { echo "baseline needs autotiling-rs installed" >&2; exit 2; }
-    echo "== baseline with $(autotiling-rs --version)"
-    local s
-    for s in $SEEDS; do
-        case_ "base-seq-$s" autotiling-rs "$TESTS/sequences.py" "$s" "$TESTS/baseline/seq-$s.jsonl"
-    done
-    case_ base-resize autotiling-rs "$TESTS/resize.py" "$TESTS/baseline/resize.json"
-}
+resize() { echo "== resize"; case_ resize "$TESTS/resize.py"; }
 
 case ${1:-all} in
     all) scenarios; sequences; resize ;;
-    scenarios|sequences|resize|baseline) "$1" ;;
-    *) sed -n '2,12p' "$0"; exit 2 ;;
+    scenarios|sequences|resize) "$1" ;;
+    *) sed -n '2,11p' "$0"; exit 2 ;;
 esac
 echo
 if [[ $FAILED == 0 ]]; then echo "ALL PASSED"; else echo "SOME TESTS FAILED"; fi

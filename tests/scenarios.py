@@ -1,7 +1,7 @@
 """Scenario suite: invariants after every step of normal use, no event loops, tab groups intact."""
 import time
 
-from lib import (by_title, check, cmd, finish, focus_events, geom, halved, msg, parents, result, show,
+from lib import (by_title, check, check_open, cmd, finish, focus_events, geom, msg, parents, result, show,
                  spawn, tree, wid, windows)
 
 
@@ -28,13 +28,9 @@ for x in "abcdacbd":
 print("== 3 a new window halves the focused one along its longer side")
 for target in "ab":
     cmd(f"[con_id={wid(target)}] focus")
-    before = by_title(tree(), target)["rect"]
-    expect = "splitv" if before["height"] > before["width"] else "splith"
+    before = tree()
     spawn("n" + target)
-    after = by_title(tree(), target)["rect"]
-    result(halved(before, after, expect),
-           f"3 n{target} halves {target} ({expect}): {before['width']}x{before['height']} -> {after['width']}x{after['height']}")
-    check(f"3 after opening n{target}")
+    check_open(before, check(f"3 after opening n{target}"), "n" + target, "3")
 
 print("== 4 tab groups survive")
 cmd(f"[con_id={wid('c')}] focus")
@@ -117,13 +113,10 @@ result(got == 30, f"10 30 focus commands -> {got} focus events (more = a loop)")
 
 print("== 11 a new window still halves the focused one")
 cmd(f"[con_id={ids[0]}] focus")
-before = windows(tree())[ids[0]]["rect"]
-expect = "splitv" if before["height"] > before["width"] else "splith"
+before = tree()
 spawn("last")
-after = windows(tree())[ids[0]]["rect"]
-result(halved(before, after, expect),
-       f"11 halves ({expect}): {before['width']}x{before['height']} -> {after['width']}x{after['height']}")
-check("11 final")
-show(tree())
+t = check("11 final")
+check_open(before, t, "last", "11")
+show(t)
 
 finish()

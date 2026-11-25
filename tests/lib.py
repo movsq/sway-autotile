@@ -1,4 +1,4 @@
-"""Shared helpers for the tests. They run inside sway-sandbox (SWAYSOCK points at the sandbox)."""
+"""Shared helpers for the tests. They run inside the headless sway that `run` starts (SWAYSOCK points at it)."""
 import json
 import os
 import subprocess
@@ -7,6 +7,7 @@ import time
 FAILS = []
 EVENTS = os.environ.get("AUTOTILE_EVENTS", "")  # file written by events.py, one "change id" per line
 TERMINAL = os.environ.get("AUTOTILE_TEST_TERMINAL", "kitty")
+GAP = 8  # "gaps inner" in the sway config that `run` writes; with smart_gaps a lone window has none
 
 
 def msg(*args):
@@ -128,10 +129,70 @@ def spawn(title, settle=0.8):
     time.sleep(settle)
 
 
-def halved(before, after, layout, tol=12):
-    if layout == "splitv":
-        return after["width"] == before["width"] and abs(after["height"] - before["height"] / 2) <= tol
-    return after["height"] == before["height"] and abs(after["width"] - before["width"] / 2) <= tol
+def rect(w):
+    return [w["rect"][k] for k in ("x", "y", "width", "height")]
+
+
+def focused_window(t):
+    for c, _ in nodes(t):
+        if c["focused"] and not c["nodes"]:
+            return c
+    return None
+
+
+def workspace_windows(t, window_id):
+    """Ids of the windows on the workspace that holds `window_id`."""
+    for output in t["nodes"]:
+        for ws in output["nodes"]:
+            ids = {c["id"] for c, _ in nodes(ws) if not c["nodes"] and c.get("app_id") is not None}
+            if window_id in ids:
+                return ids
+    return set()
+
+
+def halves(r):
+    """Where the focused window (rect r) and the new window go: r split along its longer side, the new
+    window second, GAP between them, the first half rounded like sway does."""
+    x, y, w, h = r
+    if h > w:  # splitv
+        a = int((h - GAP) / 2 + 0.5)
+        return [x, y, w, a], [x, y + a + GAP, w, h - a - GAP]
+    a = int((w - GAP) / 2 + 0.5)
+    return [x, y, a, h], [x + a + GAP, y, w - a - GAP, h]
+
+
+def check_open(before, after, title, label):
+    """The window `title` just opened: it and the window focused before share that window's old place,
+    half each along its longer side, and no other window moved."""
+    f = focused_window(before)
+    if f is None:
+        result(False, f"{label}: no focused window before the open")
+        return
+    r = rect(f)
+    if workspace_windows(before, f["id"]) == {f["id"]}:  # alone: smart_gaps gave it the whole workspace
+        r = [r[0] + GAP, r[1] + GAP, r[2] - 2 * GAP, r[3] - 2 * GAP]
+    want_f, want_new = halves(r)
+    g0, g = geom(before), geom(after)
+    new = by_title(after, title)
+    got_f, got_new = list(g.get(f["id"], ())), rect(new) if new else None
+    moved = [i for i in g0 if i != f["id"] and g.get(i) != g0[i]]
+    ok = got_f == want_f and got_new == want_new and not moved
+    result(ok, f"{label}: {title} halves {f['name']} {r[2]}x{r[3]}"
+           + ("" if ok else f"  expected {want_f} + {want_new}, got {got_f} + {got_new}, others moved: {moved}"))
+
+
+def check_still(before, after, label):
+    """Nothing opened or closed: no window moved."""
+    g0, g = geom(before), geom(after)
+    moved = [i for i in g0 if g.get(i) != g0[i]]
+    result(not moved, label + ": no window moved" + ("" if not moved else f"  moved: {moved}"))
+
+
+def check_close(before, after, closed, label):
+    """A window closed: the others only take over its space, none gets smaller."""
+    g0, g = geom(before), geom(after)
+    shrunk = [i for i in g0 if i != closed and (i not in g or g[i][2] < g0[i][2] or g[i][3] < g0[i][3])]
+    result(not shrunk, label + ": no window got smaller" + ("" if not shrunk else f"  shrunk: {shrunk}"))
 
 
 def finish():
