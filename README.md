@@ -109,9 +109,7 @@ records it again, which needs `autotiling-rs`.
 
 ## Development
 
-<!-- TODO: say whether you accept issues / pull requests -->
-
-Changes to `sway-autotile` should pass `tests/run`. The design constraints in [AGENTS.md](AGENTS.md)
+Issues and pull requests are welcome. Changes to `sway-autotile` should pass `tests/run`. The design constraints in [AGENTS.md](AGENTS.md)
 explain the non-obvious parts: why `split none` is only sent for whole runs of split containers, why
 windows are split again, why it's one process.
 
