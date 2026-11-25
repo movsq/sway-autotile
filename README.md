@@ -24,9 +24,11 @@ half of the focused one, also where autotiling-rs would give it a smaller share.
 - Splits the focused tile along its longer side so the next window takes half of it. Floating,
   fullscreen, tabbed, and stacked windows keep Sway's native layout behavior.
 - Prepares the focused tile at startup and after focus, close, and floating changes. When a window
-  opens, it checks the split direction again in case the focused tile was resized. After a move, it
-  waits until another window opens or focus changes. Sway's first directional move can take a tile
-  out of its split without changing position. Press the key again to move the tile.
+  opens, it checks the split direction again in case the focused tile was resized. Sway's
+  directional move of a prepared tile only takes it out of its split. When a key binding ran the
+  move, sway-autotile sends it again and prepares the tile, so one press moves it. A move from
+  `swaymsg` or a script sends no binding event: the first one only takes the tile out of its split,
+  and the tile is prepared again when another window opens or focus changes.
 - Removes one-window split containers with `split none` after every focus change, close, move or
   floating toggle. It keeps:
   - the focused window's own container, which decides where the next window goes;
@@ -109,17 +111,18 @@ It needs `SWAYSOCK`, which sway sets for everything it starts, including your te
 ## Tests
 
 ```bash
-tests/run              # everything, about 4.5 minutes
+tests/run              # everything, about 5 minutes
 tests/run scenarios    # invariants in normal use: no leftover containers, no event loops, tab groups intact
 tests/run sequences    # 9 seeded open/focus/close sequences; placement checked after every step
 tests/run resize       # windows whose longer side already matches their parent's layout
+tests/run keys         # one press of a move key binding moves the window (needs wtype)
 tests/run cli          # every option and error exit: --help, --once, --dry-run, no SWAYSOCK
 ```
 
 Each case starts its own headless, software-rendered sway, so nothing happens in your session. The tests
-need sway, python3 and kitty. To use another terminal with a `--title` option, set
-`AUTOTILE_TEST_TERMINAL`. `SEEDS="1 2" tests/run sequences` runs a subset, and `KEEP=1` keeps the output
-directory.
+need sway, python3 and kitty, and `tests/run keys` needs wtype. To use another terminal with a
+`--title` option, set `AUTOTILE_TEST_TERMINAL`. `SEEDS="1 2" tests/run sequences` runs a subset, and
+`KEEP=1` keeps the output directory.
 
 After each window opens, the tests check that the new window and the window focused before it fill the
 old rectangle of the focused window, half each along its longer side, and that no other window moved. A

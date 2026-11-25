@@ -3,10 +3,11 @@
 
 Autotiling: prepare the focused tile for a split along its longer side at startup and after a
 focus, close or floating change. Recheck the direction when a window opens, since Sway can resize
-the focused tile without a window event. Directional moves can take a tile out of its split, so
-wait for the next open or focus change before wrapping it again. Floating, fullscreen, tabbed and
-stacked windows are excluded. The split direction rule comes from autotiling-rs
-(github.com/ammgws/autotiling-rs).
+the focused tile without a window event. A directional move of a wrapped tile only takes it out of
+its wrapper. When a key binding ran that move, it is sent again and the tile wrapped again, so one
+press moves the tile. After a move without a binding (swaymsg, scripts), wait for the next open or
+focus change before wrapping it again. Floating, fullscreen, tabbed and stacked windows are excluded.
+The split direction rule comes from autotiling-rs (github.com/ammgws/autotiling-rs).
 
 Cleanup: a split wraps the window in a container with that one window inside. Once focus moves on,
 nothing opens there and the wrapper stays — an invisible extra level that makes moving windows,
@@ -29,6 +30,7 @@ Usage: sway-autotile [--once] [--dry-run] [--debug]
 """
 import json
 import os
+import re
 import socket
 import struct
 import sys
@@ -37,9 +39,10 @@ from uuid import uuid4
 MAGIC = b"i3-ipc"
 HEADER = struct.Struct("=6sII")
 RUN_COMMAND, SUBSCRIBE, GET_TREE, SEND_TICK = 0, 2, 4, 10
-EVENT_WINDOW, EVENT_TICK = 0x80000003, 0x80000007
+EVENT_WINDOW, EVENT_BINDING, EVENT_TICK = 0x80000003, 0x80000005, 0x80000007
 TRIGGERS = {"focus", "close", "move", "floating", "new"}
 SPLITS = ("splith", "splitv")
+DIRECTIONAL_MOVE = re.compile(r"move\s+(left|right|up|down)(\s+\d+(\s*px)?)?", re.IGNORECASE)
 
 
 def connect():
@@ -210,6 +213,7 @@ def plan_open(tree, old_id, new_id):
 
 
 def run_pass(sock, tree, dry_run, debug, moved=False):
+    """Returns (focused tile id or None, its wrapper's slot if the tile is left alone in one)."""
     commands = [f"[con_id={t['id']}] split none" for t in plan_unwrap(tree)]
     hit = split_target(tree)
     if hit and not moved:
@@ -217,8 +221,32 @@ def run_pass(sock, tree, dry_run, debug, moved=False):
         if split:
             commands.append(split)
     run_commands(sock, commands, dry_run, debug)
-    if hit and not hit[0]["nodes"]:
-        return hit[0]["id"]
+    if not hit or hit[0]["nodes"]:
+        return None, None
+    node, parent = hit
+    if is_wrapper(parent):
+        return node["id"], slot(tree, parent["id"])
+    if not moved and len(parent["nodes"]) >= 2:
+        return node["id"], slot(tree, node["id"])  # its new wrapper takes this place
+    return node["id"], None
+
+
+def slot(tree, con_id):
+    """(parent id, index) of a tiling con. A directional move out of a one-child wrapper puts the
+    tile where the wrapper was, so the tile's slot tells whether the move moved anything."""
+    def find(node):
+        for index, child in enumerate(node["nodes"]):
+            if child["id"] == con_id:
+                return node["id"], index
+            hit = find(child)
+            if hit:
+                return hit
+        return None
+
+    for ws in workspaces(tree):
+        hit = find(ws)
+        if hit:
+            return hit
     return None
 
 
@@ -252,25 +280,56 @@ def main():
         return
 
     events = connect()
-    if not request(events, SUBSCRIBE, '["window", "tick"]').get("success"):
+    if not request(events, SUBSCRIBE, '["window", "tick", "binding"]').get("success"):
         sys.exit("sway-autotile: subscribe failed")
-    previous = run_pass(sock, request(sock, GET_TREE), dry_run, debug)
-    pending = None
+    ready_tick = f"sway-autotile-ready:{uuid4().hex}"
+    previous = pending = None
+    anchor = None     # (tile id, wrapper slot): the tile was wrapped at this point of the event stream
+    unwrapped = None  # (tile id, moved nothing) from a move event; a key's binding event comes next
+
+    def prepare(tree, moved=False):
+        nonlocal previous
+        previous, wrapper = run_pass(sock, tree, dry_run, debug, moved)
+        if wrapper and not dry_run:
+            # The tree was read before this pass, so a key may have moved the tile since. A tick
+            # sent after the split puts the wrapped state at a known point of the event stream.
+            request(sock, SEND_TICK, f"{ready_tick} {previous} {wrapper[0]} {wrapper[1]}")
+
+    prepare(request(sock, GET_TREE))
     while True:
         kind, event = recv(events)
-        if kind == EVENT_TICK and pending and event.get("payload") == pending[0]:
-            token, old_id, new_id, recheck = pending
-            pending = None
-            tree = request(sock, GET_TREE)
-            parent = opening_parent(tree, old_id, new_id)
-            if parent and len(parent["nodes"]) == 2:
-                commands = orient_pair(parent, old_id) if recheck else []
-                if commands:
-                    if run_commands(sock, commands, dry_run, debug):
-                        pending = (token, old_id, new_id, False)
-                        request(sock, SEND_TICK, token)
-                else:
-                    previous = run_pass(sock, tree, dry_run, debug)
+        moved, unwrapped = unwrapped, None
+        if kind == EVENT_BINDING:
+            if moved and not pending:
+                # A key ran `move <dir>` and only took the tile out of its wrapper: move it as the
+                # key asked, then wrap it again. Sway sends no binding event for this command.
+                node_id, in_place = moved
+                command = event["binding"]["command"].strip()
+                tree = request(sock, GET_TREE)
+                hit = focused_tiling(tree)
+                if in_place and DIRECTIONAL_MOVE.fullmatch(command) and hit and hit[0]["id"] == node_id:
+                    if run_commands(sock, [f"[con_id={node_id}] {command}"], dry_run, debug):
+                        tree = request(sock, GET_TREE)
+                prepare(tree)
+            continue
+        if kind == EVENT_TICK:
+            payload = event.get("payload", "")
+            if payload.startswith(ready_tick + " "):
+                node_id, parent_id, index = map(int, payload.split()[1:])
+                anchor = (node_id, (parent_id, index))
+            elif pending and payload == pending[0]:
+                token, old_id, new_id, recheck = pending
+                pending = None
+                tree = request(sock, GET_TREE)
+                parent = opening_parent(tree, old_id, new_id)
+                if parent and len(parent["nodes"]) == 2:
+                    commands = orient_pair(parent, old_id) if recheck else []
+                    if commands:
+                        if run_commands(sock, commands, dry_run, debug):
+                            pending = (token, old_id, new_id, False)
+                            request(sock, SEND_TICK, token)
+                    else:
+                        prepare(tree)
             continue
         if kind != EVENT_WINDOW or event.get("change") not in TRIGGERS:
             continue
@@ -287,12 +346,21 @@ def main():
                         pending = (token, previous, node_id, True)
                         request(sock, SEND_TICK, token)
                 elif follow_up:
-                    previous = run_pass(sock, tree, dry_run, debug)
+                    prepare(tree)
             continue
         if pending and node_id == pending[2] and change in ("focus", "move"):
             continue  # the queued tick will prepare the focused tile after the placement check
-        # Rewrapping on user moves would keep the tile in place on subsequent directional moves.
-        previous = run_pass(sock, request(sock, GET_TREE), dry_run, debug, moved=change == "move")
+        tree = request(sock, GET_TREE)
+        if change == "move":
+            # A directional move of a wrapped tile only takes it out of the wrapper, into its slot.
+            # A later key press may already have moved it on: then this one counts as a move.
+            own = bool(anchor) and anchor[0] == node_id
+            unwrapped = (node_id, own and slot(tree, node_id) == anchor[1])
+            if own:
+                anchor = None
+        # Rewrapping on moves would keep the tile in place on later directional moves from swaymsg
+        # or scripts, which send no binding event. A key's move is wrapped again on its binding event.
+        prepare(tree, moved=change == "move")
 
 
 if __name__ == "__main__":
