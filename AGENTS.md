@@ -31,8 +31,9 @@ SEEDS="1 2" tests/run sequences    # a subset
 ## Testing
 
 - Needs sway, python3 and kitty (`AUTOTILE_TEST_TERMINAL` picks another terminal with a `--title`
-  option); `tests/run keys` also needs wtype and is skipped without it. Each case starts its own headless, software-rendered sway (`WLR_BACKENDS=headless`,
-  `WLR_RENDERER=pixman`) with a fixed 2560x1440 output and config, detached from the session it runs in.
+  option); `tests/run keys` also needs wtype and is skipped without it. Each case starts its own
+  headless, software-rendered sway (`WLR_BACKENDS=headless`, `WLR_RENDERER=pixman`) with a fixed
+  2560x1440 output and config, detached from the session it runs in.
   Never point the program or the tests at a live session — windows would move under the user.
 - Every change to `sway-autotile` must pass `tests/run` (all). The placement rule is checked directly
   (`lib.check_open`): after an open, the new window and the window focused before fill that window's old
