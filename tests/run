@@ -8,10 +8,12 @@
 #   tests/run keys         one key press of a `move` binding moves the window (needs wtype)
 #   tests/run focus        one key press of focus parent/child changes the focus on screen (needs wtype);
 #                          three times: as configured, then with workspace_open = half and = sway
-#   tests/run cli          every documented way to run it: --help, --once, --dry-run, errors
+#   tests/run cli          every documented way to run it: --help, --once, --dry-run, --config,
+#                          --check-config, warnings, errors
 #
 # Env: SEEDS="1 2" limits the sequences; KEEP=1 keeps the output dir; CONFIG='key = value' is the
-#      config file every case's program reads (default: none; never the user's own file or SWAY_AUTOTILE_*);
+#      config file every case's program reads (default: none; never the user's own file or any
+#      SWAY_AUTOTILE_* variable, which are removed from every case's environment);
 #      AUTOTILE_TEST_TERMINAL (default kitty) = the client that opens windows (needs a --title option).
 # Needs: sway, python3, kitty (or the terminal above); wtype for `keys` and `focus` (skipped without it).
 # shellcheck disable=SC2329  # cleanup and the test functions are called indirectly (trap, "$1")
@@ -82,17 +84,20 @@ trap cleanup EXIT
 # case_ NAME SCRIPT ARGS… — fresh sway, event logger, ./sway-autotile --debug, then the test script;
 # then sway stops and the daemon must exit with it. DAEMON=0 case_ … starts no daemon (the script runs
 # the program itself). Runs in a subshell so the sway sockets never leak into the next case.
-# XDG_CONFIG_HOME is the case's own dir and SWAY_AUTOTILE_* is unset, so the program never reads the
-# user's settings; CONFIG='key = value' case_ … writes CONFIG (lines separated by newlines) into the
-# config file there, default: no file.
+# XDG_CONFIG_HOME is the case's own dir and every SWAY_AUTOTILE_* name is removed from the python
+# processes' environment (`env -u`, also names that aren't shell identifiers), so the program never
+# reads the user's settings; CONFIG='key = value' case_ … writes CONFIG (lines separated by newlines)
+# into the config file there, default: no file. AUTOTILE_* variables pass through.
 case_() {
     local name=$1; shift
     local daemon=${DAEMON:-1}
     local dir="$OUT/$name"
     mkdir -p "$dir"
     (
-        local var
-        for var in $(compgen -v SWAY_AUTOTILE_); do unset "$var"; done  # they override the config file
+        local entry strip=()                 # SWAY_AUTOTILE_* override the config file
+        while IFS= read -r -d '' entry; do
+            [[ $entry == SWAY_AUTOTILE_* ]] && strip+=(-u "${entry%%=*}")
+        done < <(env -0)
         start_sway "$dir" || { echo "FAIL $name: sway did not start"; exit 1; }
         trap stop_sway EXIT
         export XDG_CONFIG_HOME="$dir/xdg"  # after start_sway: the windows sway starts keep the real one
@@ -101,15 +106,15 @@ case_() {
             printf '%s\n' "$CONFIG" >"$XDG_CONFIG_HOME/sway-autotile/config"
         fi
         : >"$dir/events"
-        python3 -B "$TESTS/events.py" "$dir/events" &
+        env "${strip[@]}" python3 -B "$TESTS/events.py" "$dir/events" &
         local pid="" rc=0 failed=0
         : >"$dir/autotiler.err"
         if [[ $daemon == 1 ]]; then
-            python3 -B "$ROOT/sway-autotile" --debug 2>"$dir/autotiler.err" &
+            env "${strip[@]}" python3 -B "$ROOT/sway-autotile" --debug 2>"$dir/autotiler.err" &
             pid=$!
         fi
         sleep 1
-        AUTOTILE_EVENTS="$dir/events" AUTOTILE_DAEMON_PID="$pid" python3 -B "$@" >"$dir/out" 2>&1 || rc=$?
+        AUTOTILE_EVENTS="$dir/events" AUTOTILE_DAEMON_PID="$pid" env "${strip[@]}" python3 -B "$@" >"$dir/out" 2>&1 || rc=$?
         grep -E '^FAIL ' "$dir/out"
         if [[ $rc != 0 ]]; then echo "FAIL $name: test script exited $rc"; tail -3 "$dir/out"; failed=1; fi
         if [[ -n $pid ]] && ! kill -0 "$pid" 2>/dev/null; then echo "FAIL $name: the autotiler died"; failed=1; fi
@@ -163,7 +168,7 @@ cli() { echo "== cli"; DAEMON=0 case_ cli "$TESTS/cli.py"; }
 case ${1:-all} in
     all) scenarios; sequences; resize; keys; focus; cli ;;
     scenarios|sequences|resize|keys|focus|cli) "$1" ;;
-    *) sed -n '2,16p' "$0"; exit 2 ;;
+    *) sed -n '2,18p' "$0"; exit 2 ;;
 esac
 echo
 if [[ $FAILED == 0 ]]; then echo "ALL PASSED"; else echo "SOME TESTS FAILED"; fi

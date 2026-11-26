@@ -38,8 +38,11 @@ CONFIG='workspace_open = half' tests/run focus   # every case's program reads th
   case starts its own headless, software-rendered sway (`WLR_BACKENDS=headless`,
   `WLR_RENDERER=pixman`) with a fixed 2560x1440 output and config, detached from the session it runs in.
   Never point the program or the tests at a live session — windows would move under the user.
-- `case_` unsets every `SWAY_AUTOTILE_*` variable and sets `XDG_CONFIG_HOME` to the case's own dir
-  (after sway starts, so windows keep the real one), so the program never reads the user's settings;
+- `case_` removes every `SWAY_AUTOTILE_*` name from the environment of the python processes it starts
+  (`env -u`, names from `env -0`: `compgen -v` misses names that aren't shell identifiers) and sets
+  `XDG_CONFIG_HOME` to the case's own dir (after sway starts, so windows keep the real one), so the
+  program never reads the user's settings; config problems only warn, so `tests/cli.py` section 15
+  checks that none got through;
   `CONFIG='key = value'` (lines separated by newlines) writes the config file there. Options live in
   `OPTIONS` (key → default, value parser); each gets its `SWAY_AUTOTILE_<KEY>` variable from there.
   The tests' own variables use the `AUTOTILE_` prefix: keep them out of `SWAY_AUTOTILE_`.
