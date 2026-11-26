@@ -87,6 +87,8 @@ SEEDS="1 2" tests/run sequences    # a subset
   As with moves, the press's start comes from the event stream, not from a tree read, which can
   already show the next press: the con focused last per window and workspace focus events and the
   daemon's own focus commands. If later presses already took the focus beyond the target, it stays.
+  If a press finds the focus still on the window a focus event put it on, a later press of the other
+  key undid it (that window's focus event comes between their binding events): nothing is sent (F9).
   `swaymsg focus parent` sends no event, so that con is only used while the focus lies in the press's
   direction from it. Known limit: after `swaymsg focus parent`, a key press that finds the focus past
   its target can't be told from a burst, so the next key press starts from that target (a `focus

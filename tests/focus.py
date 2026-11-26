@@ -18,6 +18,7 @@ workspace 9, workspace 9`; wtype presses them.
   F7  a workspace passed through on the way to another (`workspace 6; workspace 2`) doesn't take the focus back
   F8  swaymsg focus parent onto a window's wrapper, after a key's focus parent and focus child there: back
       on the workspace, the focus stays on the wrapper
+  F9  focus parent, then focus child, sent at once with the daemon stopped: the window is focused again
 """
 import json
 import os
@@ -40,6 +41,11 @@ def press(key, shift=False, settle=0.6, times=1, hold=False):
     args += ["-k", key] * times
     for m in reversed(mods):
         args += ["-m", m]
+    wtype(args, settle, hold)
+
+
+def wtype(args, settle, hold):
+    """Run a wtype command line, then wait `settle` seconds. hold: as for press()."""
     if hold and DAEMON:
         os.kill(DAEMON, signal.SIGSTOP)
     try:
@@ -169,5 +175,15 @@ cmd("workspace 2")
 cmd("workspace 7", settle=0.8)
 t = tree()
 result(on_wrapper_of(t, "h2"), f"F8 back on workspace 7: focus stays on h2's wrapper ({focused(t)})")
+
+print("== F9 focus parent, then focus child, at once")
+cmd("workspace 8")
+spawn("i1")
+spawn("i2")                                  # splith[i1, splitv[i2]], i2 focused in its wrapper
+before = tree()
+wtype(["wtype", "-M", "logo", "-k", "a", "-M", "shift", "-k", "a", "-m", "shift", "-m", "logo"], 1.2, True)
+t = tree()
+result(by_title(t, "i2")["focused"], f"F9 focus parent + focus child -> i2 focused ({focused(t)})")
+check_still(before, t, "F9")
 
 finish()
