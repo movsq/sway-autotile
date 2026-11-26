@@ -7,7 +7,7 @@
 #   tests/run resize       windows whose longer side already matches their parent's layout
 #   tests/run keys         one key press of a `move` binding moves the window (needs wtype)
 #   tests/run focus        one key press of focus parent/child changes the focus on screen (needs wtype);
-#                          three times: as configured, then with workspace_open = half and = sway
+#                          three times: workspace_open unset (end), = half, = sway (not from CONFIG)
 #   tests/run cli          every documented way to run it: --help, --once, --dry-run, errors
 #
 # Env: SEEDS="1 2" limits the sequences; KEEP=1 keeps the output dir; CONFIG='key = value' is the
@@ -47,6 +47,7 @@ bindsym Mod4+Shift+l move right
 bindsym Mod4+a focus parent
 bindsym Mod4+Shift+a focus child
 bindsym Mod4+m move container to workspace 9, workspace 9
+no_focus [title="^nf"]
 exec sh -c 'env | grep -E "^(WAYLAND_DISPLAY|SWAYSOCK)=" > "$dir/env.tmp" && mv "$dir/env.tmp" "$dir/env"'
 EOF
     env -u WAYLAND_DISPLAY -u SWAYSOCK -u I3SOCK -u DISPLAY \
@@ -150,9 +151,10 @@ keys() {
 focus() {
     echo "== focus"
     if command -v wtype >/dev/null; then
-        case_ focus "$TESTS/focus.py"
-        CONFIG='workspace_open = half' case_ focus-half "$TESTS/focus.py"
-        CONFIG='workspace_open = sway' case_ focus-sway "$TESTS/focus.py"
+        # The expected mode comes from here, not from the program's loader: a loader bug can't fool both.
+        CONFIG='' AUTOTILE_EXPECT_WORKSPACE_OPEN=end case_ focus "$TESTS/focus.py"
+        CONFIG='workspace_open = half' AUTOTILE_EXPECT_WORKSPACE_OPEN=half case_ focus-half "$TESTS/focus.py"
+        CONFIG='workspace_open = sway' AUTOTILE_EXPECT_WORKSPACE_OPEN=sway case_ focus-sway "$TESTS/focus.py"
     else
         echo "SKIP focus: wtype not found"
     fi

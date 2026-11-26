@@ -21,11 +21,6 @@ def load_program():
     return module
 
 
-def option(key):
-    """The value of a config option as the daemon of this case reads it (tests/run's CONFIG)."""
-    return load_program().load_options(None)[key]
-
-
 def msg(*args):
     return subprocess.run(["swaymsg", *args], capture_output=True, text=True).stdout
 
