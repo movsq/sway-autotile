@@ -2,28 +2,50 @@
 
 The daemon keeps the focused window in a one-child wrapper, which looks exactly like the window. A key's
 `focus parent` that stops there shows no change, so the daemon goes on past it. The sway config that `run`
-writes binds Mod4+a to focus parent and Mod4+Shift+a to focus child; wtype presses them.
+writes binds Mod4+a to focus parent, Mod4+Shift+a to focus child and Mod4+m to `move container to
+workspace 9, workspace 9`; wtype presses them.
 
   F1  two windows: one press of focus parent selects both, one press of focus child the window again
   F2  back on a workspace left after focus parent: the window is focused, and a new window halves it
   F3  one window beside two stacked ones: the stacked pair, then all; focus child goes back down the same way
   F4  swaymsg focus parent (no binding event) keeps Sway's behaviour and stops on the wrapper
+  F5  two presses of focus parent sent at once go up two levels on screen, two of focus child back down;
+      the daemon is stopped during the presses, so its tree reads already show both
+  F6  a key moves the focused window to another workspace and follows it: a new window halves it there
+      (covers handling workspace events first; on sway 1.12 no workspace event comes between a key's
+      move and binding events, so it can't catch that regression there)
+  F7  a workspace passed through on the way to another (`workspace 6; workspace 2`) doesn't take the focus back
 """
+import json
+import os
+import signal
 import subprocess
 import time
 
-from lib import check, check_open, check_still, cmd, finish, nodes, result, spawn, tree, wid
+from lib import check, check_open, check_still, cmd, finish, msg, nodes, result, spawn, tree, wid
 
 
-def press(key, shift=False, settle=0.6):
+DAEMON = int(os.environ.get("AUTOTILE_DAEMON_PID") or 0)  # the daemon `run` started for this case
+
+
+def press(key, shift=False, settle=0.6, times=1, hold=False):
+    """hold: stop the daemon while Sway runs the presses, so it reads each binding event late."""
     mods = ["logo", "shift"] if shift else ["logo"]
     args = ["wtype"]
     for m in mods:
         args += ["-M", m]
-    args += ["-k", key]
+    args += ["-k", key] * times
     for m in reversed(mods):
         args += ["-m", m]
-    subprocess.run(args, check=True)
+    if hold and DAEMON:
+        os.kill(DAEMON, signal.SIGSTOP)
+    try:
+        subprocess.run(args, check=True)
+        if hold:
+            time.sleep(0.3)
+    finally:
+        if hold and DAEMON:
+            os.kill(DAEMON, signal.SIGCONT)
     time.sleep(settle)
 
 
@@ -38,12 +60,13 @@ def focused(t):
     return []
 
 
-def press_and_check(label, want, shift=False):
+def press_and_check(label, want, shift=False, times=1, hold=False):
     before = tree()
-    press("a", shift)
+    press("a", shift, settle=0.6 * times, times=times, hold=hold)
     after = tree()
     got = focused(after)
-    result(got == want, f"{label}: focus {'child' if shift else 'parent'} -> {got}" + ("" if got == want else f", expected {want}"))
+    what = f"{times} x " * (times > 1) + f"focus {'child' if shift else 'parent'}"
+    result(got == want, f"{label}: {what} -> {got}" + ("" if got == want else f", expected {want}"))
     check_still(before, after, label)
 
 
@@ -81,5 +104,39 @@ cmd("focus parent")
 t = tree()
 on_wrapper = any(c["focused"] and len(c["nodes"]) == 1 for c, _ in nodes(t))
 result(on_wrapper, f"F4 swaymsg focus parent stops on b1's wrapper ({focused(t)})")
+
+print("== F5 two presses at once")
+cmd("workspace 4")
+spawn("c1")
+spawn("c2")
+cmd(f"[con_id={wid('c2')}] focus")
+spawn("c3")                                  # splith[c1, splitv[c2, splith[c3]]], c3 focused
+result(DAEMON != 0, "F5 the daemon's pid is known")
+press_and_check("F5 two presses", ["c1", "c2", "c3"], times=2, hold=True)
+press_and_check("F5 two child presses", ["c3"], shift=True, times=2, hold=True)
+check("F5")
+
+print("== F6 a key moves the window to another workspace and follows it")
+cmd("workspace 9")
+spawn("d1")
+cmd("workspace 5")
+spawn("e1")
+spawn("e2")                                  # e2 focused, wrapped
+press("m")                                   # e2 to workspace 9 beside d1, focus follows it
+t = check("F6 moved")
+got = focused(t)
+result(got == ["e2"], f"F6 e2 focused on workspace 9: {got} focused")
+spawn("e3")
+check_open(t, check("F6 open e3"), "e3", "F6")
+
+print("== F7 passing through a workspace")
+cmd("workspace 6")
+spawn("g1")
+spawn("g2")
+press_and_check("F7 focus parent", ["g1", "g2"])  # workspace 6 focused, g2's wrapper below it
+cmd("workspace 2")
+cmd("workspace 6; workspace 2", settle=0.8)
+ws = [w["name"] for w in json.loads(msg("-t", "get_workspaces")) if w["focused"]]
+result(ws == ["2"], f"F7 workspace 6; workspace 2 -> workspace {ws} focused")
 
 finish()

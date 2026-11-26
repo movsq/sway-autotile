@@ -8,8 +8,9 @@ its wrapper. When a key binding ran that move, it is sent again and the tile wra
 press moves the tile. After a move without a binding (swaymsg, scripts), wait for the next open or
 focus change before wrapping it again. Floating, fullscreen, tabbed and stacked windows are excluded.
 A key's `focus parent`/`focus child` that stops on a one-child wrapper goes on past it, since the
-wrapper looks like the window inside. Sway can give focus back to such a wrapper when you return to a
-workspace; the window inside gets focus then.
+wrapper looks like the window inside: each press moves the focus one level on screen, also when
+presses come faster than the daemon reads them. Sway can give focus back to such a wrapper when you
+return to a workspace; the window inside gets focus then.
 The split direction rule comes from autotiling-rs (github.com/ammgws/autotiling-rs).
 
 Cleanup: a split wraps the window in a container with that one window inside. Once focus moves on,
@@ -102,32 +103,78 @@ def hidden(node):
     return is_wrapper(node) and node["layout"] in SPLITS and not node.get("marks")
 
 
-def plan_focus_level(tree, direction):
-    """After `focus parent`/`focus child`: commands that move focus on past hidden cons.
-    Without it a press that lands on the focused window's wrapper shows no change."""
-    parent_of = {}
+def tree_index(tree):
+    """id -> node and id -> parent for every workspace and the tiling cons in it."""
+    by_id, parent_of = {}, {}
 
     def walk(node):
+        by_id[node["id"]] = node
         for child in node["nodes"]:
             parent_of[child["id"]] = node
             walk(child)
 
     for ws in workspaces(tree):
         walk(ws)
-    hit = focused_tiling(tree)
-    if not hit:
-        return []
-    node = hit[0]
-    if not hidden(node):
-        return []
-    if direction == "child":
+    return by_id, parent_of
+
+
+def focused_con(tree):
+    """The focused workspace or tiling con, or None (floating/none)."""
+    return next((n for n in tree_index(tree)[0].values() if n["focused"]), None)
+
+
+def plan_focus_level(tree, direction, base):
+    """A key's `focus parent`/`focus child`: (commands, new base). The press goes one level on screen
+    from `base`, the con focused before it, past hidden cons: otherwise a press that lands on the
+    focused window's wrapper shows no change. `base` comes from the event stream, since a tree read
+    after the press can already show the next press; it is only trusted if the focus now lies in the
+    press's direction from it."""
+    by_id, parent_of = tree_index(tree)
+    now = next((n for n in by_id.values() if n["focused"]), None)
+    if not now or now.get("fullscreen_mode"):
+        return [], None  # floating or fullscreen: Sway's behaviour
+    up = direction == "parent"
+
+    def chain(node):
+        """The node and its ancestors up to the workspace."""
+        out = [node]
+        while out[-1]["id"] in parent_of:
+            out.append(parent_of[out[-1]["id"]])
+        return out
+
+    def past(node):
         while hidden(node):
-            node = node["nodes"][0]
-        return [f"[con_id={node['id']}] focus"]
-    while hidden(parent_of[node["id"]]):
-        node = parent_of[node["id"]]
-    # A workspace matches no [con_id=]: focus the top hidden con, then its parent, as the key did.
-    return [f"[con_id={node['id']}] focus", "focus parent"]
+            node = parent_of[node["id"]] if up else node["nodes"][0]
+        return node
+
+    def step(node):
+        """One press from `node`: Sway's step (the parent, or the child focused last), then past
+        hidden cons. A workspace has no parent, a window no child, a fullscreen con stays."""
+        if up:
+            if node["id"] not in parent_of or node.get("fullscreen_mode"):
+                return node
+            return past(parent_of[node["id"]])
+        children = {c["id"]: c for c in node["nodes"]}
+        child = next((children[i] for i in node.get("focus", []) if i in children), None)
+        return past(child) if child else node
+
+    start = by_id.get(base)
+    if start and any(n is (now if up else start) for n in chain(start if up else now)):
+        target = new_base = step(start)
+        if any(n is (now if up else target) for n in chain(target if up else now)[1:]):
+            # Later presses already took the focus beyond this one's target: leave it there. A
+            # stale base looks the same (swaymsg focus parent, then this key), and the next key
+            # press then starts from this target instead of where the focus is: a known limit.
+            target = past(now)
+    else:
+        target = new_base = past(now)  # focus changed without an event (swaymsg): this press alone
+    if target is now:
+        return [], new_base["id"]
+    if target["type"] == "workspace":
+        # A workspace matches no [con_id=]: focus its child above the focus, then its parent.
+        top = next(n for n in chain(now) if parent_of.get(n["id"]) is target)
+        return [f"[con_id={top['id']}] focus", "focus parent"], new_base["id"]
+    return [f"[con_id={target['id']}] focus"], new_base["id"]
 
 
 def removable(run):
@@ -332,25 +379,42 @@ def main():
             # sent after the split puts the wrapped state at a known point of the event stream.
             request(sock, SEND_TICK, f"{ready_tick} {previous} {wrapper[0]} {wrapper[1]}")
 
-    prepare(request(sock, GET_TREE))
+    tree = request(sock, GET_TREE)
+    base = focused_con(tree)  # the con focused before the next focus key press, at this point of the stream
+    base = base and base["id"]
+    prepare(tree)
     while True:
         kind, event = recv(events)
-        moved, unwrapped = unwrapped, None
         if kind == EVENT_WORKSPACE:
-            if event.get("change") == "focus":
+            # Handled before `unwrapped` is passed on: a key's move to another workspace or output
+            # can put a workspace event between its move event and its binding event.
+            if event.get("change") == "focus" and event.get("current"):
                 # Sway gives focus back to the con focused last there, which can be a wrapper the
                 # user went past with `focus parent`. A window opened then would land beside the
-                # wrapper instead of halving the window. Focus the window; its focus event prepares it.
-                run_commands(sock, plan_focus_level(request(sock, GET_TREE), "child"), dry_run, debug)
+                # wrapper instead of halving the window. Focus the window; its focus event prepares
+                # it. Only while the focus is still there: a later command may have left the
+                # workspace already. Sway sends a key's binding event before it runs this command,
+                # so the command's focus event comes after it.
+                tree = request(sock, GET_TREE)
+                parent_of = tree_index(tree)[1]
+                node = focused_con(tree)
+                while node and node["id"] in parent_of:
+                    node = parent_of[node["id"]]
+                if node and node["id"] == event["current"]["id"]:
+                    commands, base = plan_focus_level(tree, "child", None)
+                    run_commands(sock, commands, dry_run, debug)
             continue
+        moved, unwrapped = unwrapped, None
         if kind == EVENT_BINDING:
             command = event["binding"]["command"].strip()
             level = FOCUS_LEVEL.fullmatch(command)
             if level:
                 # The key's focus parent/child may have stopped on a wrapper, which looks like the
-                # window inside it: go on to the level the user sees. Focusing a con emits no event.
+                # window inside it: go on to the level the user sees. Focusing a con that is no
+                # window emits no event; focusing a window emits a focus event, handled as any other.
                 tree = request(sock, GET_TREE)
-                run_commands(sock, plan_focus_level(tree, level[1].lower()), dry_run, debug)
+                commands, base = plan_focus_level(tree, level[1].lower(), base)
+                run_commands(sock, commands, dry_run, debug)
             elif moved and not pending:
                 # A key ran `move <dir>` and only took the tile out of its wrapper: move it as the
                 # key asked, then wrap it again. Sway sends no binding event for this command.
@@ -381,6 +445,8 @@ def main():
                     else:
                         prepare(tree)
             continue
+        if kind == EVENT_WINDOW and event.get("change") == "focus":
+            base = event["container"]["id"]  # focus on a con that is no window sends no event
         if kind != EVENT_WINDOW or event.get("change") not in TRIGGERS:
             continue
         change, node_id = event["change"], event["container"]["id"]

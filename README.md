@@ -31,9 +31,10 @@ takes half of the focused one, also where autotiling-rs would give it a smaller 
   its split. Dragging a tile with the mouse works as in plain sway.
 - Changes the focus on the first press of a `focus parent` or `focus child` key. The focused window's
   container looks exactly like the window, so a press that stops there would show no change; when a
-  key binding ran the command, sway-autotile moves the focus on past it. As with `move`, `swaymsg focus
-  parent` keeps sway's behavior. When you come back to a workspace and sway gives the focus to such a
-  container, the window inside gets it, so a new window still halves that window.
+  key binding ran the command, sway-autotile moves the focus on past it, one level per press, also
+  when you press the key several times quickly. As with `move`, `swaymsg focus parent` keeps sway's
+  behavior. When you come back to a workspace and sway gives the focus to such a container, the window
+  inside gets it, so a new window still halves that window.
 - Removes one-window split containers with `split none` after every focus change, close, move or
   floating toggle. It keeps:
   - the focused window's own container, which decides where the next window goes;

@@ -44,6 +44,7 @@ bindsym Mod4+Shift+k move up
 bindsym Mod4+Shift+l move right
 bindsym Mod4+a focus parent
 bindsym Mod4+Shift+a focus child
+bindsym Mod4+m move container to workspace 9, workspace 9
 exec sh -c 'env | grep -E "^(WAYLAND_DISPLAY|SWAYSOCK)=" > "$dir/env.tmp" && mv "$dir/env.tmp" "$dir/env"'
 EOF
     env -u WAYLAND_DISPLAY -u SWAYSOCK -u I3SOCK -u DISPLAY \
@@ -96,7 +97,7 @@ case_() {
             pid=$!
         fi
         sleep 1
-        AUTOTILE_EVENTS="$dir/events" python3 -B "$@" >"$dir/out" 2>&1 || rc=$?
+        AUTOTILE_EVENTS="$dir/events" AUTOTILE_DAEMON_PID="$pid" python3 -B "$@" >"$dir/out" 2>&1 || rc=$?
         grep -E '^FAIL ' "$dir/out"
         if [[ $rc != 0 ]]; then echo "FAIL $name: test script exited $rc"; tail -3 "$dir/out"; failed=1; fi
         if [[ -n $pid ]] && ! kill -0 "$pid" 2>/dev/null; then echo "FAIL $name: the autotiler died"; failed=1; fi

@@ -82,8 +82,18 @@ SEEDS="1 2" tests/run sequences    # a subset
   skips the new window's focus and move events until its tick arrives. The repeated key move emits
   a move event but no binding event, and only binding events repeat moves.
 - A key's `focus parent` can stop on the focused window's wrapper, which looks like the window: on
-  its binding event the daemon focuses the top one-child split con and sends `focus parent` again
-  (`[con_id=]` matches no workspace); `focus child` goes down to the con below them. A workspace focus
-  event can restore focus to such a wrapper, and a window opened then lands beside it (a third, not a
-  half), so the daemon focuses the window inside. `tests/run focus` F2 covers the return.
+  its binding event the daemon moves the focus one level on screen, past one-child split cons
+  (`[con_id=]` matches no workspace: for one it focuses the con below and sends `focus parent`).
+  As with moves, the press's start comes from the event stream, not from a tree read, which can
+  already show the next press: the con focused last per window and workspace focus events and the
+  daemon's own focus commands. If later presses already took the focus beyond the target, it stays.
+  `swaymsg focus parent` sends no event, so that con is only used while the focus lies in the press's
+  direction from it. Known limit: after `swaymsg focus parent`, a key press that finds the focus past
+  its target can't be told from a burst, so the next key press starts from that target (a `focus
+  child` key can then go two levels). `tests/run focus` F5 stops the daemon while Sway runs two presses.
+- A workspace focus event can restore focus to such a wrapper, and a window opened then lands beside
+  it (a third, not a half), so the daemon focuses the window inside (F2), read from a fresh tree and
+  only while the focus is still on that workspace: `workspace 6; workspace 2` runs both before the
+  daemon reads the first event (F7). Workspace events are handled before a move event's result is
+  passed on, so one can't drop a key move's rewrap (on sway 1.12 none came between them in tests).
 - No dependencies beyond the Python standard library (no i3ipc): keep it that way.
