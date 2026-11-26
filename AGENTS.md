@@ -15,6 +15,7 @@ tests/scenarios.py      # invariants in normal use, no event loops, tab groups i
 tests/sequences.py      # 9 seeded open/focus/close sequences (SEEDS table), placement checked every step
 tests/resize.py         # windows whose longer side already matches their parent's layout
 tests/keys.py           # one press of a `move` key binding moves the window (wtype presses the keys)
+tests/focus.py          # one press of a `focus parent`/`focus child` key changes the focus on screen
 tests/cli.py            # every documented way to run it: --help, --once, --dry-run, plain daemon, errors
 tests/lib.py, events.py # helpers and the placement checks; event logger (counts focus events)
 ```
@@ -24,16 +25,16 @@ tests/lib.py, events.py # helpers and the placement checks; event logger (counts
 ```bash
 ./sway-autotile --once --dry-run   # safe in a live session: prints what it would do, changes nothing
 ./sway-autotile --debug            # logs every command to stderr — run it in a test sway, not a live session
-tests/run                          # all tests, ~5 min; or: scenarios | sequences | resize | keys | cli
+tests/run                          # all tests, ~5 min; or: scenarios | sequences | resize | keys | focus | cli
 SEEDS="1 2" tests/run sequences    # a subset
 ```
 
 ## Testing
 
 - Needs sway, python3 and kitty (`AUTOTILE_TEST_TERMINAL` picks another terminal with a `--title`
-  option); `tests/run keys` also needs wtype and is skipped without it. Each case starts its own
-  headless, software-rendered sway (`WLR_BACKENDS=headless`, `WLR_RENDERER=pixman`) with a fixed
-  2560x1440 output and config, detached from the session it runs in.
+  option); `tests/run keys` and `tests/run focus` also need wtype and are skipped without it. Each
+  case starts its own headless, software-rendered sway (`WLR_BACKENDS=headless`,
+  `WLR_RENDERER=pixman`) with a fixed 2560x1440 output and config, detached from the session it runs in.
   Never point the program or the tests at a live session — windows would move under the user.
 - Every change to `sway-autotile` must pass `tests/run` (all). The placement rule is checked directly
   (`lib.check_open`): after an open, the new window and the window focused before fill that window's old
@@ -80,4 +81,9 @@ SEEDS="1 2" tests/run sequences    # a subset
   repair is the exception: its `mark` and `move container to mark` emit window events, so the daemon
   skips the new window's focus and move events until its tick arrives. The repeated key move emits
   a move event but no binding event, and only binding events repeat moves.
+- A key's `focus parent` can stop on the focused window's wrapper, which looks like the window: on
+  its binding event the daemon focuses the top one-child split con and sends `focus parent` again
+  (`[con_id=]` matches no workspace); `focus child` goes down to the con below them. A workspace focus
+  event can restore focus to such a wrapper, and a window opened then lands beside it (a third, not a
+  half), so the daemon focuses the window inside. `tests/run focus` F2 covers the return.
 - No dependencies beyond the Python standard library (no i3ipc): keep it that way.
