@@ -37,7 +37,9 @@ takes half of the focused one, also where autotiling-rs would give it a smaller 
   went past, the window inside gets it, so a new window still halves that window.
 - Opens a window at the end of the workspace when a focus key selected the whole workspace. sway
   puts it right after the window focused last, so with the left one of two halves it would open
-  between them; this way it lands to the right of all of them, whichever window you started from.
+  between them; this way it lands to the right of all of them, whichever window you started from,
+  and the other windows keep their sizes, as if you had started from the last one. A window that opens
+  without the focus (sway's `no_focus`) leaves the workspace selected, so the next one goes there too.
   With `workspace_open = half` in the [config file](#config-file) the new window takes half the
   workspace along its longer side instead, and the windows already there share the other half in their
   old layout and proportions. `workspace_open = sway` keeps sway's placement.
@@ -160,7 +162,7 @@ The daemon's warnings go wherever sway puts the stderr of what it starts, so run
 ## Tests
 
 ```bash
-tests/run              # everything, about 5 minutes
+tests/run              # everything, about 9 minutes
 tests/run scenarios    # invariants in normal use: no leftover containers, no event loops, tab groups intact
 tests/run sequences    # 9 seeded open/focus/close sequences; placement checked after every step
 tests/run resize       # windows whose longer side already matches their parent's layout
@@ -174,7 +176,7 @@ Each case starts its own headless, software-rendered sway, so nothing happens in
 need sway, python3 and kitty, and `tests/run keys` and `tests/run focus` need wtype. To use another terminal with a
 `--title` option, set `AUTOTILE_TEST_TERMINAL`. `SEEDS="1 2" tests/run sequences` runs a subset, and
 `KEEP=1` keeps the output directory. The tests never read your config file or `SWAY_AUTOTILE_` variables: each case
-gets its own `XDG_CONFIG_HOME` with them unset, and `CONFIG='workspace_open = half' tests/run focus` gives every case that config.
+gets its own `XDG_CONFIG_HOME` with them unset, and `CONFIG='workspace_open = half' tests/run scenarios` gives those cases that config. `tests/run focus` sets its own: it runs once per `workspace_open` value.
 
 After each window opens, the tests check that the new window and the window focused before it fill the
 old rectangle of the focused window, half each along its longer side, and that no other window moved. A

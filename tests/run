@@ -1,19 +1,19 @@
 #!/usr/bin/env bash
 # tests/run — run the tests, each case in its own headless sway (never the session you're in).
 #
-#   tests/run [all]        scenarios + sequences + resize + keys + focus + cli against ./sway-autotile (~5 min)
+#   tests/run [all]        scenarios + sequences + resize + keys + focus + cli against ./sway-autotile (~9 min)
 #   tests/run scenarios    invariants in normal use, no event loops, tab groups intact
 #   tests/run sequences    9 seeded open/focus/close sequences, placement rules checked at every step
 #   tests/run resize       windows whose longer side already matches their parent's layout
 #   tests/run keys         one key press of a `move` binding moves the window (needs wtype)
 #   tests/run focus        one key press of focus parent/child changes the focus on screen (needs wtype);
-#                          three times: as configured, then with workspace_open = half and = sway
+#                          three times: workspace_open unset (end), = half, = sway (not from CONFIG)
 #   tests/run cli          every documented way to run it: --help, --once, --dry-run, --config,
 #                          --check-config, warnings, errors
 #
 # Env: SEEDS="1 2" limits the sequences; KEEP=1 keeps the output dir; CONFIG='key = value' is the
-#      config file every case's program reads (default: none; never the user's own file or any
-#      SWAY_AUTOTILE_* variable, which are removed from every case's environment);
+#      config file the program reads in every case but focus, which sets its own (default: none; never
+#      the user's own file or any SWAY_AUTOTILE_* variable, which are removed from every case's environment);
 #      AUTOTILE_TEST_TERMINAL (default kitty) = the client that opens windows (needs a --title option).
 # Needs: sway, python3, kitty (or the terminal above); wtype for `keys` and `focus` (skipped without it).
 # shellcheck disable=SC2329  # cleanup and the test functions are called indirectly (trap, "$1")
@@ -49,6 +49,7 @@ bindsym Mod4+Shift+l move right
 bindsym Mod4+a focus parent
 bindsym Mod4+Shift+a focus child
 bindsym Mod4+m move container to workspace 9, workspace 9
+no_focus [title="^nf"]
 exec sh -c 'env | grep -E "^(WAYLAND_DISPLAY|SWAYSOCK)=" > "$dir/env.tmp" && mv "$dir/env.tmp" "$dir/env"'
 EOF
     env -u WAYLAND_DISPLAY -u SWAYSOCK -u I3SOCK -u DISPLAY \
@@ -155,9 +156,10 @@ keys() {
 focus() {
     echo "== focus"
     if command -v wtype >/dev/null; then
-        case_ focus "$TESTS/focus.py"
-        CONFIG='workspace_open = half' case_ focus-half "$TESTS/focus.py"
-        CONFIG='workspace_open = sway' case_ focus-sway "$TESTS/focus.py"
+        # The expected mode comes from here, not from the program's loader: a loader bug can't fool both.
+        CONFIG='' AUTOTILE_EXPECT_WORKSPACE_OPEN=end case_ focus "$TESTS/focus.py"
+        CONFIG='workspace_open = half' AUTOTILE_EXPECT_WORKSPACE_OPEN=half case_ focus-half "$TESTS/focus.py"
+        CONFIG='workspace_open = sway' AUTOTILE_EXPECT_WORKSPACE_OPEN=sway case_ focus-sway "$TESTS/focus.py"
     else
         echo "SKIP focus: wtype not found"
     fi

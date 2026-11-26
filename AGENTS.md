@@ -15,8 +15,8 @@ tests/scenarios.py      # invariants in normal use, no event loops, tab groups i
 tests/sequences.py      # 9 seeded open/focus/close sequences (SEEDS table), placement checked every step
 tests/resize.py         # windows whose longer side already matches their parent's layout
 tests/keys.py           # one press of a `move` key binding moves the window (wtype presses the keys)
-tests/focus.py          # one press of a `focus parent`/`focus child` key changes the focus on screen;
-                       # run three times: as configured, workspace_open = half, = sway (F12, F13 check each)
+tests/focus.py          # one press of a `focus parent`/`focus child` key changes the focus on screen; run
+                       # three times, workspace_open unset (end), = half, = sway (F12-F20 check each)
 tests/cli.py            # every documented way to run it: --help, --once, --dry-run, --config, daemon, errors
 tests/lib.py, events.py # helpers and the placement checks; event logger (counts focus events)
 ```
@@ -26,9 +26,9 @@ tests/lib.py, events.py # helpers and the placement checks; event logger (counts
 ```bash
 ./sway-autotile --once --dry-run   # safe in a live session: prints what it would do, changes nothing
 ./sway-autotile --debug            # logs every command to stderr — run it in a test sway, not a live session
-tests/run                          # all tests, ~5 min; or: scenarios | sequences | resize | keys | focus | cli
+tests/run                          # all tests, ~9 min; or: scenarios | sequences | resize | keys | focus | cli
 SEEDS="1 2" tests/run sequences    # a subset
-CONFIG='workspace_open = half' tests/run focus   # every case's program reads this config file
+CONFIG='workspace_open = half' tests/run scenarios   # the program reads this config file (focus sets its own)
 ```
 
 ## Testing
@@ -120,14 +120,25 @@ CONFIG='workspace_open = half' tests/run focus   # every case's program reads th
 - A window opened while the workspace itself is focused goes, in Sway, right after the workspace's child
   focused last (the seat's focus stack), so `focus parent` from the left of two halves opens it between
   them. When a focus key left the focus on the workspace (dropped by the next window or workspace focus
-  event), the daemon moves the new window to the workspace's end on its `new` event: `move container to
-  mark` after the last child, plus one directional `move` out when that child is a container (to a
-  container's mark it goes in as last child). A focused container below the workspace needs nothing:
-  Sway already opens the window after it (F12, F13). `swaymsg focus parent` sends no event and keeps
-  Sway's placement. `workspace_open = half` instead focuses the workspace (`[con_id=new] focus parent`)
-  and sends `split`, which wraps all its children, the new one too, in a con with the old layout and
-  sizes; the new window then moves out after it with one directional `move`, while that con is turned
-  across the move's direction (from there a window goes out from any position), then turned back.
-  A workspace with one other child only gets its layout set. A fullscreen new window is left alone
-  in both modes: its directional move would go to the next output.
+  event), the daemon puts the new window at the workspace's end on its `new` event: each child after it,
+  in order, gets `[con_id=X] move left|up` and swaps places with it, a view, so every con keeps its size
+  and the result equals Sway's own with the last child focused (F14, F15; `up` on a splitv one, F17).
+  Moving the new window there (`move container to mark`, then out of a container) changes the others'
+  sizes. A focused container below the workspace needs nothing: Sway already opens the window after it
+  (F12, F13). `swaymsg focus parent` sends no event and keeps Sway's placement. `workspace_open = half`
+  first puts the window last the same way, then `[con_id=new] focus parent; split h|v` (a focused
+  workspace's `split` wraps all its children in a con with the old layout and sizes and gives the
+  workspace the new one) and one `move right|down` along the new layout, which takes the window, that
+  con's last child, out right after it whatever its layout. No layout flip: turning that con across for
+  the move and back squashed a marked container among the children (F16). With one other child only the
+  workspace's own layout is set (`focus parent; layout`): `[con_id=new] layout` would wrap both in a new
+  con (F20). Half ends on `[con_id=new] focus`, or `focus parent` for a no_focus window, so the workspace
+  stays selected (F19). Both modes do nothing when the `new` tree read shows neither the window nor the
+  workspace focused (the selection is stale), when the workspace has no other tiled child (only floating
+  ones, F18), or when a con there is fullscreen (its directional move would go to the next output). Known
+  limits: `swaymsg focus child` onto a group sends no event, so a window opened then still counts as
+  opened on the workspace; a window that maps before the daemon reads the key's binding event isn't seen
+  as opened there (that tree read already shows it focused); a window that closes between the daemon's
+  tree read and its commands can make half's unscoped `split`/`layout` act on whatever has the focus
+  then, or the reorder's moves swap the wrong cons.
 - No dependencies beyond the Python standard library (no i3ipc): keep it that way.
