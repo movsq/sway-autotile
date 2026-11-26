@@ -30,10 +30,15 @@ a window focused in the meantime (which two separate daemons could). `split`, `l
 `split none` on a target emit no window event and move no focus, so nothing loops.
 
 Usage: sway-autotile [--once] [--dry-run] [--debug] [--config PATH]
+       sway-autotile --check-config [--config PATH]
   --once           one pass over the current tree, then exit
   --dry-run        print the commands instead of running them
   --debug          log every command to stderr
-  --config PATH    read options from PATH instead of the default file
+  --config PATH    read options from PATH instead of the default file (--config=PATH for a path
+                   starting with -)
+  --check-config   print the options as the daemon would use them (`key = value`), with a warning
+                   for each problem; exit 1 if there was one. Needs no sway.
+A bad command line (unknown option, --config without a path or given twice) exits 2.
 
 Config file: $XDG_CONFIG_HOME/sway-autotile/config (default ~/.config/sway-autotile/config), optional.
 One `key = value` per line; blank lines and lines starting with # are ignored. Options:
@@ -41,8 +46,10 @@ One `key = value` per line; blank lines and lines starting with # are ignored. O
                                    selected goes: the workspace's end (default), half the workspace
                                    along its longer side, or where Sway puts it
 Each option can also be set as SWAY_AUTOTILE_<KEY> (e.g. SWAY_AUTOTILE_WORKSPACE_OPEN=sway), which
-wins over the file; an empty one counts as unset, an unknown one is an error. Sway's `exec` passes
-sway's environment on, so a variable exported in a shell profile overrides the file.
+wins over the file; an empty one counts as unset. Sway's `exec` passes sway's environment on, so a
+variable exported in a shell profile overrides the file. A problem in the file or a variable (an
+unknown key or variable, a bad value, a file that can't be read) prints a warning and is skipped:
+that option keeps the value it would have without it, and the program runs on.
 """
 import json
 import os
@@ -452,8 +459,10 @@ OPTIONS = {"workspace_open": ("end", one_of("end", "half", "sway"))}  # config k
 ENV_PREFIX = "SWAY_AUTOTILE_"  # + the key upper-cased: overrides the file
 
 
-def load_config(path):
-    """The options from `path`, or from the default file if `path` is None (a missing one is fine)."""
+def load_config(path, warnings):
+    """The options from `path`, or from the default file if `path` is None (a missing one is fine).
+    Each problem goes to `warnings` and is skipped: a bad line changes nothing, a file that can't be
+    read gives the defaults."""
     config = {key: default for key, (default, _) in OPTIONS.items()}
     if path is None:
         base = os.environ.get("XDG_CONFIG_HOME") or os.path.join(os.path.expanduser("~"), ".config")
@@ -464,7 +473,8 @@ def load_config(path):
         with open(path, encoding="utf-8") as f:
             lines = f.read().splitlines()
     except (OSError, UnicodeDecodeError) as e:
-        sys.exit(f"sway-autotile: {path}: {getattr(e, 'strerror', None) or e}")
+        warnings.append(f"{path}: {getattr(e, 'strerror', None) or e}")
+        return config
     for number, line in enumerate(lines, 1):
         line = line.strip()
         if not line or line.startswith("#"):
@@ -472,53 +482,80 @@ def load_config(path):
         key, sep, value = line.partition("=")
         key, value = key.strip(), value.strip()
         if not sep:
-            sys.exit(f"sway-autotile: {path}:{number}: expected `key = value`, got {line!r}")
-        if key not in OPTIONS:
-            sys.exit(f"sway-autotile: {path}:{number}: unknown key {key!r}")
-        try:
-            config[key] = OPTIONS[key][1](value)
-        except ValueError as e:
-            sys.exit(f"sway-autotile: {path}:{number}: {key}: {e}")
+            warnings.append(f"{path}:{number}: expected `key = value`, got {line!r}")
+        elif key not in OPTIONS:
+            warnings.append(f"{path}:{number}: unknown key {key!r}")
+        else:
+            try:
+                config[key] = OPTIONS[key][1](value)
+            except ValueError as e:
+                warnings.append(f"{path}:{number}: {key}: {e}")
     return config
 
 
-def load_options(path):
+def load_options(path, warnings=None):
     """The config file's options, each overridden by its SWAY_AUTOTILE_<KEY> variable if that is set
-    and not empty."""
-    config = load_config(path)
+    and not empty. Problems go to the list `warnings` (if given) and are skipped: a bad variable
+    leaves the file's value or the default, an unknown one is ignored."""
+    warnings = [] if warnings is None else warnings
+    config = load_config(path, warnings)
     for name, value in sorted(os.environ.items()):
         if not name.startswith(ENV_PREFIX) or not value:
             continue
         key = name[len(ENV_PREFIX):].lower()
         if key not in OPTIONS or name != ENV_PREFIX + key.upper():
-            sys.exit(f"sway-autotile: unknown variable {name} (see --help)")
+            warnings.append(f"unknown variable {name} (see --help)")
+            continue
         try:
             config[key] = OPTIONS[key][1](value)
         except ValueError as e:
-            sys.exit(f"sway-autotile: {name}: {e}")
+            warnings.append(f"{name}: {e}")
     return config
+
+
+def usage_error(message):
+    """A bad command line: exit 2, so --check-config's 1 only ever means warnings."""
+    print(f"sway-autotile: {message}", file=sys.stderr)
+    sys.exit(2)
 
 
 def main():
     argv, args, config_path = sys.argv[1:], set(), None
     while argv:
         arg = argv.pop(0)
-        if arg == "--config":
-            if not argv:
-                sys.exit("sway-autotile: --config needs a path (see --help)")
-            config_path = argv.pop(0)
-        elif arg.startswith("--config="):
-            config_path = arg[len("--config="):]
+        if arg == "--config" or arg.startswith("--config="):
+            if config_path is not None:
+                usage_error("--config given more than once (see --help)")
+            if arg != "--config":
+                config_path = arg[len("--config="):]
+            elif not argv:
+                usage_error("--config needs a path (see --help)")
+            elif argv[0].startswith("-"):
+                usage_error(f"--config needs a path, got {argv[0]!r} "
+                            "(use --config=PATH for a path starting with -)")
+            else:
+                config_path = argv.pop(0)
         else:
             args.add(arg)
     if {"-h", "--help"} & args:
         print("Usage: " + __doc__.split("Usage:")[1].strip())
         return
-    unknown = args - {"--once", "--dry-run", "--debug"}
+    unknown = args - {"--once", "--dry-run", "--debug", "--check-config"}
     if unknown:
-        sys.exit(f"sway-autotile: unknown option(s): {' '.join(sorted(unknown))} (see --help)")
+        usage_error(f"unknown option(s): {' '.join(sorted(unknown))} (see --help)")
+    if "--check-config" in args and len(args) > 1:
+        others = " ".join(sorted(args - {"--check-config"}))
+        usage_error(f"--check-config combines only with --config, got {others} (see --help)")
     dry_run, debug = "--dry-run" in args, "--debug" in args
-    workspace_open = load_options(config_path)["workspace_open"]
+    warnings = []
+    options = load_options(config_path, warnings)
+    for warning in warnings:
+        print(f"sway-autotile: warning: {warning}", file=sys.stderr, flush=True)
+    if "--check-config" in args:
+        for key, value in options.items():
+            print(f"{key} = {value}")
+        sys.exit(1 if warnings else 0)
+    workspace_open = options["workspace_open"]
 
     sock = connect()
     if "--once" in args:

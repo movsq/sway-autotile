@@ -117,17 +117,19 @@ Without options it runs as a daemon, started from the sway config as above. It e
 | `--once` | one pass over the current tree, then exit |
 | `--dry-run` | print the sway commands instead of running them |
 | `--debug` | log every command it sends to stderr |
-| `--config PATH` | read the config file at `PATH` instead of the default one |
+| `--config PATH` | read the config file at `PATH` instead of the default one; write `--config=PATH` for a path that starts with `-` |
+| `--check-config` | print the options the daemon would use, one `key = value` per line, and a warning for each problem; exit 1 if there was one, else 0 |
 
 `--once --dry-run` only reads the tree, so it's safe to run in your session to see what the daemon would do.
 It needs `SWAYSOCK`, which sway sets for everything it starts, including your terminal inside sway.
+`--check-config` never connects to sway and combines only with `--config`. A bad command line, such as an
+unknown option or `--config` given twice, exits with status 2.
 
 ### Config file
 
 It reads `$XDG_CONFIG_HOME/sway-autotile/config`, or `~/.config/sway-autotile/config` when
-`XDG_CONFIG_HOME` isn't set. Without that file it uses the defaults. A file given with `--config` must exist.
-Each line is `key = value`; blank lines and lines starting with `#` are skipped. An unknown key or a bad
-value stops it with an error that names the line.
+`XDG_CONFIG_HOME` isn't set. Without that file it uses the defaults.
+Each line is `key = value`; blank lines and lines starting with `#` are skipped.
 
 ```ini
 # a window opened while a focus key selects the whole workspace takes half of it
@@ -140,9 +142,20 @@ workspace_open = half
 
 Each key can also be set in the environment as `SWAY_AUTOTILE_` plus the key in upper case, for example
 `SWAY_AUTOTILE_WORKSPACE_OPEN=sway sway-autotile --once --dry-run`. A variable wins over the file,
-and the file wins over the default. An empty variable counts as unset; a bad value or an unknown
-`SWAY_AUTOTILE_` variable stops it with an error. sway's `exec` passes sway's environment on, so a
-variable exported in your shell profile overrides the file.
+and the file wins over the default. An empty variable counts as unset. sway's `exec` passes sway's
+environment on, so a variable exported in your shell profile overrides the file.
+
+A mistake in the config doesn't stop it. It prints a warning on stderr and skips what it can't use, then
+runs on:
+
+- an unknown key, a line without `=` or an unknown `SWAY_AUTOTILE_` variable is ignored;
+- a bad value in the file leaves that key as it was (the default, unless a variable sets it);
+- a bad value in a variable leaves the file's value, or the default;
+- a file it can't read, such as a missing `--config` file, a directory or a file that isn't UTF-8, gives the
+  defaults, and the variables still apply.
+
+The daemon's warnings go wherever sway puts the stderr of what it starts, so run
+`sway-autotile --check-config` after you edit the file to see them and the values it ends up with.
 
 ## Tests
 
