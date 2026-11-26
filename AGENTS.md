@@ -107,4 +107,12 @@ SEEDS="1 2" tests/run sequences    # a subset
   that Sway itself takes to the workspace still record the wrapper (F11). Workspace events are handled
   before a move event's result is passed on, so one can't drop a key move's rewrap (on sway 1.12 none
   came between them in tests).
+- A window opened while the workspace itself is focused goes, in Sway, right after the workspace's child
+  focused last (the seat's focus stack), so `focus parent` from the left of two halves opens it between
+  them. When a focus key left the focus on the workspace (dropped by the next window or workspace focus
+  event), the daemon moves the new window to the workspace's end on its `new` event: `move container to
+  mark` after the last child, plus one directional `move` out when that child is a container (to a
+  container's mark it goes in as last child). A focused container below the workspace needs nothing:
+  Sway already opens the window after it (F12, F13). `swaymsg focus parent` sends no event and keeps
+  Sway's placement.
 - No dependencies beyond the Python standard library (no i3ipc): keep it that way.

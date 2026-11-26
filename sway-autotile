@@ -10,7 +10,9 @@ focus change before wrapping it again. Floating, fullscreen, tabbed and stacked 
 A key's `focus parent`/`focus child` that stops on a one-child wrapper goes on past it, since the
 wrapper looks like the window inside: each press moves the focus one level on screen, also when
 presses come faster than the daemon reads them. Sway can give focus back to a wrapper a key went past
-when you return to a workspace; the window inside gets focus then.
+when you return to a workspace; the window inside gets focus then. A window opened while a key's
+`focus parent` has the whole workspace selected goes to the workspace's end: Sway puts it after the
+child focused last, which can be in the middle.
 The split direction rule comes from autotiling-rs (github.com/ammgws/autotiling-rs).
 
 Cleanup: a split wraps the window in a container with that one window inside. Once focus moves on,
@@ -327,6 +329,26 @@ def plan_open(tree, old_id, new_id):
     return commands, True
 
 
+def plan_append(tree, ws_id, new_id):
+    """A window opened while workspace `ws_id` itself was focused: Sway puts it right after the
+    workspace's child focused last, which can be in the middle. Move it to the end, where Sway puts
+    it when the last child was focused: outside what was selected, whichever window it came from."""
+    by_id, parent_of = tree_index(tree)
+    ws = by_id.get(ws_id)
+    if not ws or parent_of.get(new_id) is not ws or ws["layout"] not in SPLITS:
+        return []
+    last = ws["nodes"][-1]
+    if last["id"] == new_id:
+        return []
+    mark = f"__sway_autotile_{uuid4().hex}"
+    commands = [f"[con_id={last['id']}] mark --add {mark}", f"[con_id={new_id}] move container to mark {mark}",
+                f"[con_id={last['id']}] unmark {mark}"]
+    if last["nodes"]:
+        # Moved to a container's mark, the window goes in as its last child: one step on, out after it.
+        commands.append(f"[con_id={new_id}] move {'right' if ws['layout'] == 'splith' else 'down'}")
+    return commands
+
+
 def run_pass(sock, tree, dry_run, debug, moved=False):
     """Returns (focused tile id or None, its wrapper's slot if the tile is left alone in one)."""
     commands = [f"[con_id={t['id']}] split none" for t in plan_unwrap(tree)]
@@ -417,6 +439,7 @@ def main():
     # workspace id -> the hidden con a focus key went past there and Sway would give the focus back
     # to; dropped on the next window focus on that workspace or the next focus key press there.
     restores = {}
+    selected = None  # the workspace a focus key left the focus on; dropped on the next focus elsewhere
     prepare(tree)
     while True:
         kind, event = recv(events)
@@ -424,6 +447,8 @@ def main():
             # Handled before `unwrapped` is passed on: a key's move to another workspace or output
             # can put a workspace event between its move event and its binding event.
             ws = (event.get("current") or {}).get("id")
+            if event.get("change") == "focus":
+                selected = None  # Sway gives the focus to a con on the workspace, not to the workspace
             if event.get("change") == "focus" and ws in restores:
                 # Sway gives focus back to the con focused last there, which can be a wrapper a
                 # focus key went past. A window opened then would land beside the wrapper instead
@@ -455,6 +480,8 @@ def main():
                 restores.pop(ws, None)
                 if restore:
                     restores[ws] = restore
+                node = tree_index(tree)[0].get(base)
+                selected = base if node and node["type"] == "workspace" else None
                 run_commands(sock, commands, dry_run, debug)
             elif moved and not pending:
                 # A key ran `move <dir>` and only took the tile out of its wrapper: move it as the
@@ -489,11 +516,16 @@ def main():
         if kind == EVENT_WINDOW and event.get("change") == "focus":
             base = event["container"]["id"]  # focus on a con that is no window sends no event
             exact = True
+            selected = None
         if kind != EVENT_WINDOW or event.get("change") not in TRIGGERS:
             continue
         change, node_id = event["change"], event["container"]["id"]
         if change == "new":
-            if previous:
+            commands = plan_append(request(sock, GET_TREE), selected, node_id) if selected else []
+            if commands:
+                # Its focus event, read next, prepares it; the tree read then already shows it moved.
+                run_commands(sock, commands, dry_run, debug)
+            elif previous:
                 tree = request(sock, GET_TREE)
                 commands, follow_up = plan_open(tree, previous, node_id)
                 if commands:

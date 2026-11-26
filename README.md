@@ -35,6 +35,9 @@ takes half of the focused one, also where autotiling-rs would give it a smaller 
   when you press the key several times quickly. As with `move`, `swaymsg focus parent` keeps sway's
   behavior. When you come back to a workspace and sway gives the focus to a container that a key press
   went past, the window inside gets it, so a new window still halves that window.
+- Opens a window at the end of the workspace when a focus key selected the whole workspace. sway
+  puts it right after the window focused last, so with the left one of two halves it would open
+  between them; this way it lands to the right of all of them, whichever window you started from.
 - Removes one-window split containers with `split none` after every focus change, close, move or
   floating toggle. It keeps:
   - the focused window's own container, which decides where the next window goes;

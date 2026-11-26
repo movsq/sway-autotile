@@ -23,6 +23,9 @@ workspace 9, workspace 9`; wtype presses them.
       a new window halves it
   F11 two presses of focus parent at once (daemon stopped) that Sway itself takes to the workspace: back on
       the workspace, the window is focused and a new window halves it
+  F12 focus parent from the left of two windows selects the workspace: a new window opens right of both,
+      as it does from the right one (Sway alone puts it after the window focused last, between them)
+  F13 the same with a split group last on the workspace: the new window opens right of the group
 """
 import json
 import os
@@ -30,7 +33,7 @@ import signal
 import subprocess
 import time
 
-from lib import by_title, check, check_open, check_still, cmd, finish, msg, nodes, parents, result, spawn, tree, wid
+from lib import by_title, check, check_open, check_still, cmd, finish, geom_by_title, msg, nodes, parents, result, spawn, tree, wid
 
 
 DAEMON = int(os.environ.get("AUTOTILE_DAEMON_PID") or 0)  # the daemon `run` started for this case
@@ -214,5 +217,44 @@ t = check("F11 back")
 result(by_title(t, "x2")["focused"], f"F11 back on workspace 11: x2 focused ({focused(t)})")
 spawn("x3")
 check_open(t, check("F11 open x3"), "x3", "F11")
+
+
+def rects(t, titles):
+    g = geom_by_title(t)
+    return [g.get(title) for title in titles]
+
+
+print("== F12 focus parent on the workspace from the left window, then open")
+# Sway puts a window opened on a focused workspace after the child focused last there; the daemon
+# moves it to the end, as with the last child focused (workspace 13: Sway's own result).
+for ws, start in ((12, "k1"), (13, "l2")):
+    cmd(f"workspace {ws}")
+    p = "k" if ws == 12 else "l"
+    spawn(p + "1")
+    spawn(p + "2")                               # splith[p1, splitv[p2]]
+    cmd(f"[con_id={wid(start)}] focus")          # 12: splith[splitv[k1], k2], k1 focused
+    press_and_check(f"F12 focus parent on {ws}", [p + "1", p + "2"])
+    spawn(p + "3")
+    t = check(f"F12 open {p}3")
+    result(by_title(t, p + "3")["focused"], f"F12 {p}3 focused")
+got, want = rects(t, ["k1", "k2", "k3"]), rects(t, ["l1", "l2", "l3"])
+result(got == want, f"F12 k3 opens right of k1 and k2 like l3 does: {got}" + ("" if got == want else f", expected {want}"))
+
+print("== F13 the same with a split group last on the workspace")
+for ws, presses in ((14, 1), (15, 2)):
+    cmd(f"workspace {ws}")
+    p = "m" if ws == 14 else "n"
+    spawn(p + "1")
+    spawn(p + "2")
+    cmd(f"[con_id={wid(p + '2')}] focus")
+    spawn(p + "3")                               # splith[p1, splitv[p2, splith[p3]]], p3 focused
+    if ws == 14:
+        cmd(f"[con_id={wid('m1')}] focus")       # m1 wrapped, the group last
+    for i in range(presses):
+        press_and_check(f"F13 focus parent on {ws} ({i + 1})", [p + "1", p + "2", p + "3"] if ws == 14 or i else ["n2", "n3"])
+    spawn(p + "4")
+    t = check(f"F13 open {p}4")
+got, want = rects(t, ["m1", "m2", "m3", "m4"]), rects(t, ["n1", "n2", "n3", "n4"])
+result(got == want, f"F13 m4 opens right of the group like n4 does: {got}" + ("" if got == want else f", expected {want}"))
 
 finish()
