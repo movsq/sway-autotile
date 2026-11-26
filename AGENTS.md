@@ -100,7 +100,9 @@ SEEDS="1 2" tests/run sequences    # a subset
   workspace) is left: one picked with `swaymsg focus parent` stays (F8). Known limit: `swaymsg focus
   child` onto a wrapper a key went past sends no event either, so on return the daemon still moves the
   focus off that one. The daemon keeps one such wrapper per workspace, set by a focus key there and
-  dropped by the next window focus there; a key press that changes nothing keeps it (F10). Workspace
-  events are handled before a move event's result is passed on, so one can't drop a key move's rewrap
-  (on sway 1.12 none came between them in tests).
+  dropped by the next window focus there; a key press that changes nothing keeps it (F10). Sway reports
+  `fullscreen_mode` 1 for every workspace, so only a con counts as fullscreen: two presses that Sway
+  itself takes to the workspace still record the wrapper (F11). Workspace events are handled before a
+  move event's result is passed on, so one can't drop a key move's rewrap (on sway 1.12 none came
+  between them in tests).
 - No dependencies beyond the Python standard library (no i3ipc): keep it that way.

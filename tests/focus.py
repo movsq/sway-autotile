@@ -21,6 +21,8 @@ workspace 9, workspace 9`; wtype presses them.
   F9  focus parent, then focus child, sent at once with the daemon stopped: the window is focused again
   F10 focus parent once more on the workspace (a no-op): back on the workspace, the window is focused and
       a new window halves it
+  F11 two presses of focus parent at once (daemon stopped) that Sway itself takes to the workspace: back on
+      the workspace, the window is focused and a new window halves it
 """
 import json
 import os
@@ -200,5 +202,17 @@ t = check("F10 back")
 result(by_title(t, "j2")["focused"], f"F10 back on workspace 10: j2 focused ({focused(t)})")
 spawn("j3")
 check_open(t, check("F10 open j3"), "j3", "F10")
+
+print("== F11 two presses at once up to the workspace, then back on it")
+cmd("workspace 11")
+spawn("x1")
+spawn("x2")                                  # splith[x1, splitv[x2]], x2 focused in its wrapper
+press_and_check("F11 two presses", ["x1", "x2"], times=2, hold=True)  # Sway: x2, its wrapper, workspace
+cmd("workspace 2")
+cmd("workspace 11", settle=0.8)
+t = check("F11 back")
+result(by_title(t, "x2")["focused"], f"F11 back on workspace 11: x2 focused ({focused(t)})")
+spawn("x3")
+check_open(t, check("F11 open x3"), "x3", "F11")
 
 finish()

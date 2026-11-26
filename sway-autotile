@@ -141,7 +141,7 @@ def plan_focus_level(tree, direction, base, exact=False):
     focus back to on returning to the workspace, or None. Workspace id None: leave that alone."""
     by_id, parent_of = tree_index(tree)
     now = next((n for n in by_id.values() if n["focused"]), None)
-    if not now or now.get("fullscreen_mode"):
+    if not now or (now["type"] == "con" and now.get("fullscreen_mode")):  # a workspace always reports 1
         return [], None, (None, None)  # floating or fullscreen: Sway's behaviour
     up = direction == "parent"
     skipped = set()  # ids of the hidden cons gone past
@@ -163,7 +163,8 @@ def plan_focus_level(tree, direction, base, exact=False):
         """Sway's own step: the parent, or the child focused last. None for a workspace going up, a
         window going down or a fullscreen con."""
         if up:
-            return None if node.get("fullscreen_mode") else parent_of.get(node["id"])
+            fullscreen = node["type"] == "con" and node.get("fullscreen_mode")
+            return None if fullscreen else parent_of.get(node["id"])
         children = {c["id"]: c for c in node["nodes"]}
         return next((children[i] for i in node.get("focus", []) if i in children), None)
 
@@ -193,8 +194,11 @@ def plan_focus_level(tree, direction, base, exact=False):
         # con this press went past, or focuses here on the way, it is the press's, not a choice.
         if target is now:
             top = next((c for c in now["nodes"] if c["id"] in now.get("focus", [])[:1]), None)
-            restore = top["id"] if top and top["id"] in skipped else None
-            return [], new_base["id"], (ws, restore)
+            if top and top["id"] in skipped:
+                return [], new_base["id"], (ws, top["id"])
+            if start is now:
+                return [], new_base["id"], (None, None)  # a no-op in Sway: `top` is unchanged
+            return [], new_base["id"], (ws, None)
         # A workspace matches no [con_id=]: focus its child above the focus, then its parent.
         top = next(n for n in chain(now) if parent_of.get(n["id"]) is target)
         restore = top["id"] if hidden(top) else None
