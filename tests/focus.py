@@ -19,6 +19,8 @@ workspace 9, workspace 9`; wtype presses them.
   F8  swaymsg focus parent onto a window's wrapper, after a key's focus parent and focus child there: back
       on the workspace, the focus stays on the wrapper
   F9  focus parent, then focus child, sent at once with the daemon stopped: the window is focused again
+  F10 focus parent once more on the workspace (a no-op): back on the workspace, the window is focused and
+      a new window halves it
 """
 import json
 import os
@@ -185,5 +187,18 @@ wtype(["wtype", "-M", "logo", "-k", "a", "-M", "shift", "-k", "a", "-m", "shift"
 t = tree()
 result(by_title(t, "i2")["focused"], f"F9 focus parent + focus child -> i2 focused ({focused(t)})")
 check_still(before, t, "F9")
+
+print("== F10 focus parent on the workspace, then back on it")
+cmd("workspace 10")
+spawn("j1")
+spawn("j2")
+press_and_check("F10 focus parent", ["j1", "j2"])  # workspace 10 focused, j2's wrapper below it
+press_and_check("F10 focus parent again", ["j1", "j2"])
+cmd("workspace 2")
+cmd("workspace 10", settle=0.8)
+t = check("F10 back")
+result(by_title(t, "j2")["focused"], f"F10 back on workspace 10: j2 focused ({focused(t)})")
+spawn("j3")
+check_open(t, check("F10 open j3"), "j3", "F10")
 
 finish()

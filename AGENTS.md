@@ -98,7 +98,8 @@ SEEDS="1 2" tests/run sequences    # a subset
   while the focus is still on that workspace: `workspace 6; workspace 2` runs both before the daemon
   reads the first event (F7). Only a wrapper a focus key went past (or focused on the way to the
   workspace) is left: one picked with `swaymsg focus parent` stays (F8). The daemon keeps one such
-  wrapper per workspace, set by a focus key there and dropped by the next window focus there. Workspace
+  wrapper per workspace, set by a focus key there and dropped by the next window focus there; a key
+  press that changes nothing keeps it (F10). Workspace
   events are handled before a move event's result is passed on, so one can't drop a key move's rewrap
   (on sway 1.12 none came between them in tests).
 - No dependencies beyond the Python standard library (no i3ipc): keep it that way.
