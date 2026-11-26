@@ -473,13 +473,6 @@ def main():
             continue
         if kind == EVENT_WINDOW and event.get("change") == "focus":
             base = event["container"]["id"]  # focus on a con that is no window sends no event
-            if restores:
-                # A window focused on a workspace replaces what Sway gives the focus back to there.
-                by_id, parent_of = tree_index(request(sock, GET_TREE))
-                node = by_id.get(base)
-                if node:
-                    restores.pop(workspace_of(parent_of, node)["id"], None)
-                restores = {w: c for w, c in restores.items() if w in by_id and c in by_id}
         if kind != EVENT_WINDOW or event.get("change") not in TRIGGERS:
             continue
         change, node_id = event["change"], event["container"]["id"]
@@ -500,6 +493,15 @@ def main():
         if pending and node_id == pending[2] and change in ("focus", "move"):
             continue  # the queued tick will prepare the focused tile after the placement check
         tree = request(sock, GET_TREE)
+        if change == "focus" and restores:
+            # A window focused on a workspace replaces what Sway gives the focus back to there. The
+            # pending skip above drops nothing: a stale entry is harmless, since the workspace
+            # branch only acts while the focus is on the entry's con.
+            by_id, parent_of = tree_index(tree)
+            node = by_id.get(node_id)
+            if node:
+                restores.pop(workspace_of(parent_of, node)["id"], None)
+            restores = {w: c for w, c in restores.items() if w in by_id and c in by_id}
         if change == "move":
             # A directional move of a wrapped tile only takes it out of the wrapper, into its slot.
             # A later key press may already have moved it on: then this one counts as a move.
