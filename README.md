@@ -37,7 +37,9 @@ takes half of the focused one, also where autotiling-rs would give it a smaller 
   went past, the window inside gets it, so a new window still halves that window.
 - Opens a window at the end of the workspace when a focus key selected the whole workspace. sway
   puts it right after the window focused last, so with the left one of two halves it would open
-  between them; this way it lands to the right of all of them, whichever window you started from.
+  between them; this way it lands to the right of all of them, whichever window you started from,
+  and the other windows keep their sizes, as if you had started from the last one. A window that opens
+  without the focus (sway's `no_focus`) leaves the workspace selected, so the next one goes there too.
   With `workspace_open = half` in the [config file](#config-file) the new window takes half the
   workspace along its longer side instead, and the windows already there share the other half in their
   old layout and proportions. `workspace_open = sway` keeps sway's placement.
