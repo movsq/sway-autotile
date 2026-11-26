@@ -11,8 +11,9 @@ A key's `focus parent`/`focus child` that stops on a one-child wrapper goes on p
 wrapper looks like the window inside: each press moves the focus one level on screen, also when
 presses come faster than the daemon reads them. Sway can give focus back to a wrapper a key went past
 when you return to a workspace; the window inside gets focus then. A window opened while a key's
-`focus parent` has the whole workspace selected goes to the workspace's end, or takes half the
-workspace: Sway puts it after the child focused last, which can be in the middle (option workspace_open).
+`focus parent` has the whole workspace selected goes to the workspace's end, every other con keeping
+its size, or takes half the workspace: Sway puts it after the child focused last, which can be in the
+middle (option workspace_open). A no_focus window leaves the workspace selected.
 The split direction rule comes from autotiling-rs (github.com/ammgws/autotiling-rs).
 
 Cleanup: a split wraps the window in a container with that one window inside. Once focus moves on,
@@ -348,44 +349,38 @@ def plan_append(tree, ws_id, new_id, mode):
     ws, new = by_id.get(ws_id), by_id.get(new_id)
     if not ws or not new or parent_of.get(new_id) is not ws or ws["layout"] not in SPLITS:
         return []
-    if new.get("fullscreen_mode"):
-        return []  # a directional move of a fullscreen window goes to the next output
+    if not (new["focused"] or ws["focused"]):
+        return []  # the focus went elsewhere meanwhile (a no_focus window): the selection is gone
+    cons = [n for n in by_id.values() if n["type"] == "con" and workspace_of(parent_of, n) is ws]
+    if any(n.get("fullscreen_mode") for n in cons + ws.get("floating_nodes", [])):
+        return []  # a directional move of a fullscreen con goes to the next output
+    ids = [c["id"] for c in ws["nodes"]]
+    if len(ids) == 1:
+        return []  # the workspace held only floating windows: nothing to go after
+    # Each child after the window swaps places with it, a view: every con keeps its own size, as if
+    # Sway had put the window at the end. Moving the window itself would change the others' sizes.
+    back = "left" if ws["layout"] == "splith" else "up"
+    commands = [f"[con_id={con_id}] move {back}" for con_id in ids[ids.index(new_id) + 1:]]
     if mode == "half":
-        return plan_half(ws, new_id)
-    last = ws["nodes"][-1]
-    if last["id"] == new_id:
-        return []
-    mark = f"__sway_autotile_{uuid4().hex}"
-    commands = [f"[con_id={last['id']}] mark --add {mark}", f"[con_id={new_id}] move container to mark {mark}",
-                f"[con_id={last['id']}] unmark {mark}"]
-    if last["nodes"]:
-        # Moved to a container's mark, the window goes in as its last child: one step on, out after it.
-        commands.append(f"[con_id={new_id}] move {'right' if ws['layout'] == 'splith' else 'down'}")
+        commands += plan_half(ws, new)
     return commands
 
 
-def plan_half(ws, new_id):
-    """Wrap the workspace's other children in one container that keeps their layout and sizes, and put
-    the new window after it, half each along the workspace's longer side."""
+def plan_half(ws, new):
+    """After plan_append's commands put `new` last: wrap the workspace's other children in one con that
+    keeps their layout and sizes, and put `new` after it, half each along the workspace's longer side.
+    The focus ends where it was: on `new`, or on the workspace for a no_focus window."""
     want = split_layout(ws)
-    others = [c for c in ws["nodes"] if c["id"] != new_id]
-    if len(others) == 1:
-        # Sway put the window after the one child, focused last: only the direction can be wrong.
-        return [f"[con_id={new_id}] layout {want}"] if ws["layout"] != want else []
-    new = next(c for c in ws["nodes"] if c["id"] == new_id)
-    if not (new["focused"] or ws["focused"]):
-        return []  # the focus went elsewhere meanwhile: the workspace's `split` below needs it here
-    # A focused workspace's `split` wraps all its children, the new one too, in a con with the
-    # workspace's old layout; a directional move takes the new window out after that con. Across
-    # that con's own direction it goes out from any position, so the con turns across for the move.
-    commands = [f"[con_id={new_id}] focus parent", f"split {want[5]}"]
-    across = "splitv" if want == "splith" else "splith"
-    if ws["layout"] != across:
-        commands.append(f"[con_id={new_id}] layout {across}")
-    commands.append(f"[con_id={new_id}] move {'right' if want == 'splith' else 'down'}")
-    if ws["layout"] != across:
-        commands.append(f"[con_id={others[0]['id']}] layout {ws['layout']}")
-    return commands + ([f"[con_id={new_id}] focus"] if new["focused"] else [])  # no_focus: on the workspace
+    refocus = f"[con_id={new['id']}] focus" + ("" if new["focused"] else " parent")
+    if len(ws["nodes"]) == 2:
+        # One other child: only the direction can be wrong. `layout` on the window would wrap both in
+        # a new con, so it goes to the workspace itself.
+        return [f"[con_id={new['id']}] focus parent", f"layout {want}", refocus] if ws["layout"] != want else []
+    # A focused workspace's `split` wraps all its children, the window too, in a con with the
+    # workspace's old layout and sizes, and gives the workspace the layout `want`. The window is that
+    # con's last child, so a move along `want` takes it out right after the con, whatever its layout.
+    return [f"[con_id={new['id']}] focus parent", f"split {want[5]}",
+            f"[con_id={new['id']}] move {'right' if want == 'splith' else 'down'}", refocus]
 
 
 def run_pass(sock, tree, dry_run, debug, moved=False):
@@ -633,7 +628,8 @@ def main():
             commands = plan_append(request(sock, GET_TREE), selected, node_id, workspace_open) if selected else []
             if commands:
                 # Its focus event, read next, prepares it; the tree read then already shows it moved.
-                # "half" ends on the window's own focus command: the same focus event, one more.
+                # "half" ends on the window's own focus command: the same focus event, one more. A
+                # no_focus window sends none, and the focus ends on the workspace: it stays selected.
                 run_commands(sock, commands, dry_run, debug)
             elif previous:
                 tree = request(sock, GET_TREE)
