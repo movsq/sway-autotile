@@ -6,7 +6,8 @@ writes binds Mod4+a to focus parent, Mod4+Shift+a to focus child and Mod4+m to `
 workspace 9, workspace 9`; wtype presses them.
 
   F1  two windows: one press of focus parent selects both, one press of focus child the window again
-  F2  back on a workspace left after focus parent: the window is focused, and a new window halves it
+  F2  back on a workspace left after focus parent: Sway gives the focus to the window's wrapper (checked with
+      the daemon stopped), the daemon focuses the window, and a new window halves it
   F3  one window beside two stacked ones: the stacked pair, then all; focus child goes back down the same way
   F4  swaymsg focus parent (no binding event) keeps Sway's behaviour and stops on the wrapper
   F5  two presses of focus parent sent at once go up two levels on screen, two of focus child back down;
@@ -15,6 +16,8 @@ workspace 9, workspace 9`; wtype presses them.
       (covers handling workspace events first; on sway 1.12 no workspace event comes between a key's
       move and binding events, so it can't catch that regression there)
   F7  a workspace passed through on the way to another (`workspace 6; workspace 2`) doesn't take the focus back
+  F8  swaymsg focus parent onto a window's wrapper, after a key's focus parent and focus child there: back
+      on the workspace, the focus stays on the wrapper
 """
 import json
 import os
@@ -22,7 +25,7 @@ import signal
 import subprocess
 import time
 
-from lib import check, check_open, check_still, cmd, finish, msg, nodes, result, spawn, tree, wid
+from lib import by_title, check, check_open, check_still, cmd, finish, msg, nodes, parents, result, spawn, tree, wid
 
 
 DAEMON = int(os.environ.get("AUTOTILE_DAEMON_PID") or 0)  # the daemon `run` started for this case
@@ -60,6 +63,12 @@ def focused(t):
     return []
 
 
+def on_wrapper_of(t, title):
+    """The focused con is the wrapper of window `title`: its parent, a con with that one child."""
+    wrapper = parents(t).get(by_title(t, title)["id"])
+    return bool(wrapper) and wrapper["focused"] and wrapper["type"] == "con" and len(wrapper["nodes"]) == 1
+
+
 def press_and_check(label, want, shift=False, times=1, hold=False):
     before = tree()
     press("a", shift, settle=0.6 * times, times=times, hold=hold)
@@ -79,7 +88,16 @@ press_and_check("F1 again", ["a1", "a2"])
 
 print("== F2 back on the workspace")
 cmd("workspace 2")
-cmd("workspace 1")
+if DAEMON:
+    os.kill(DAEMON, signal.SIGSTOP)              # Sway's own restore, before the daemon reacts
+try:
+    cmd("workspace 1")
+    t = tree()
+    result(on_wrapper_of(t, "a2"), f"F2 Sway focuses a2's wrapper on workspace 1 ({focused(t)})")
+finally:
+    if DAEMON:
+        os.kill(DAEMON, signal.SIGCONT)
+time.sleep(0.35)
 got = focused(tree())
 result(got == ["a2"], f"F2 back on workspace 1: {got} focused")
 before = check("F2 back")
@@ -102,8 +120,7 @@ print("== F4 swaymsg focus parent")
 cmd(f"[con_id={wid('b1')}] focus")
 cmd("focus parent")
 t = tree()
-on_wrapper = any(c["focused"] and len(c["nodes"]) == 1 for c, _ in nodes(t))
-result(on_wrapper, f"F4 swaymsg focus parent stops on b1's wrapper ({focused(t)})")
+result(on_wrapper_of(t, "b1"), f"F4 swaymsg focus parent stops on b1's wrapper ({focused(t)})")
 
 print("== F5 two presses at once")
 cmd("workspace 4")
@@ -138,5 +155,19 @@ cmd("workspace 2")
 cmd("workspace 6; workspace 2", settle=0.8)
 ws = [w["name"] for w in json.loads(msg("-t", "get_workspaces")) if w["focused"]]
 result(ws == ["2"], f"F7 workspace 6; workspace 2 -> workspace {ws} focused")
+
+print("== F8 swaymsg focus parent, then back on the workspace")
+cmd("workspace 7")
+spawn("h1")
+spawn("h2")                                  # h2 focused, wrapped
+press_and_check("F8 focus parent", ["h1", "h2"])
+press_and_check("F8 child", ["h2"], shift=True)
+cmd("focus parent")
+t = tree()
+result(on_wrapper_of(t, "h2"), f"F8 swaymsg focus parent stops on h2's wrapper ({focused(t)})")
+cmd("workspace 2")
+cmd("workspace 7", settle=0.8)
+t = tree()
+result(on_wrapper_of(t, "h2"), f"F8 back on workspace 7: focus stays on h2's wrapper ({focused(t)})")
 
 finish()
