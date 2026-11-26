@@ -1,16 +1,17 @@
 #!/usr/bin/env bash
 # tests/run — run the tests, each case in its own headless sway (never the session you're in).
 #
-#   tests/run [all]        scenarios + sequences + resize + keys + cli against ./sway-autotile (~5 min)
+#   tests/run [all]        scenarios + sequences + resize + keys + focus + cli against ./sway-autotile (~5 min)
 #   tests/run scenarios    invariants in normal use, no event loops, tab groups intact
 #   tests/run sequences    9 seeded open/focus/close sequences, placement rules checked at every step
 #   tests/run resize       windows whose longer side already matches their parent's layout
 #   tests/run keys         one key press of a `move` binding moves the window (needs wtype)
+#   tests/run focus        one key press of focus parent/child changes the focus on screen (needs wtype)
 #   tests/run cli          every documented way to run it: --help, --once, --dry-run, errors
 #
 # Env: SEEDS="1 2" limits the sequences; KEEP=1 keeps the output dir;
 #      AUTOTILE_TEST_TERMINAL (default kitty) = the client that opens windows (needs a --title option).
-# Needs: sway, python3, kitty (or the terminal above); wtype for `keys` (skipped without it).
+# Needs: sway, python3, kitty (or the terminal above); wtype for `keys` and `focus` (skipped without it).
 # shellcheck disable=SC2329  # cleanup and the test functions are called indirectly (trap, "$1")
 set -uo pipefail
 
@@ -41,6 +42,9 @@ bindsym Mod4+Shift+h move left
 bindsym Mod4+Shift+j move down
 bindsym Mod4+Shift+k move up
 bindsym Mod4+Shift+l move right
+bindsym Mod4+a focus parent
+bindsym Mod4+Shift+a focus child
+bindsym Mod4+m move container to workspace 9, workspace 9
 exec sh -c 'env | grep -E "^(WAYLAND_DISPLAY|SWAYSOCK)=" > "$dir/env.tmp" && mv "$dir/env.tmp" "$dir/env"'
 EOF
     env -u WAYLAND_DISPLAY -u SWAYSOCK -u I3SOCK -u DISPLAY \
@@ -93,7 +97,7 @@ case_() {
             pid=$!
         fi
         sleep 1
-        AUTOTILE_EVENTS="$dir/events" python3 -B "$@" >"$dir/out" 2>&1 || rc=$?
+        AUTOTILE_EVENTS="$dir/events" AUTOTILE_DAEMON_PID="$pid" python3 -B "$@" >"$dir/out" 2>&1 || rc=$?
         grep -E '^FAIL ' "$dir/out"
         if [[ $rc != 0 ]]; then echo "FAIL $name: test script exited $rc"; tail -3 "$dir/out"; failed=1; fi
         if [[ -n $pid ]] && ! kill -0 "$pid" 2>/dev/null; then echo "FAIL $name: the autotiler died"; failed=1; fi
@@ -131,12 +135,17 @@ keys() {
     if command -v wtype >/dev/null; then case_ keys "$TESTS/keys.py"; else echo "SKIP keys: wtype not found"; fi
 }
 
+focus() {
+    echo "== focus"
+    if command -v wtype >/dev/null; then case_ focus "$TESTS/focus.py"; else echo "SKIP focus: wtype not found"; fi
+}
+
 cli() { echo "== cli"; DAEMON=0 case_ cli "$TESTS/cli.py"; }
 
 case ${1:-all} in
-    all) scenarios; sequences; resize; keys; cli ;;
-    scenarios|sequences|resize|keys|cli) "$1" ;;
-    *) sed -n '2,13p' "$0"; exit 2 ;;
+    all) scenarios; sequences; resize; keys; focus; cli ;;
+    scenarios|sequences|resize|keys|focus|cli) "$1" ;;
+    *) sed -n '2,14p' "$0"; exit 2 ;;
 esac
 echo
 if [[ $FAILED == 0 ]]; then echo "ALL PASSED"; else echo "SOME TESTS FAILED"; fi

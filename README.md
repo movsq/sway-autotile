@@ -29,6 +29,12 @@ takes half of the focused one, also where autotiling-rs would give it a smaller 
   the move, sway-autotile sends the same move again and then prepares the tile. A `move` from
   `swaymsg` or a script sends no binding event, so there the first command only takes the tile out of
   its split. Dragging a tile with the mouse works as in plain sway.
+- Changes the focus on the first press of a `focus parent` or `focus child` key. The focused window's
+  container looks exactly like the window, so a press that stops there would show no change; when a
+  key binding ran the command, sway-autotile moves the focus on past it, one level per press, also
+  when you press the key several times quickly. As with `move`, `swaymsg focus parent` keeps sway's
+  behavior. When you come back to a workspace and sway gives the focus to a container that a key press
+  went past, the window inside gets it, so a new window still halves that window.
 - Removes one-window split containers with `split none` after every focus change, close, move or
   floating toggle. It keeps:
   - the focused window's own container, which decides where the next window goes;
@@ -117,11 +123,12 @@ tests/run scenarios    # invariants in normal use: no leftover containers, no ev
 tests/run sequences    # 9 seeded open/focus/close sequences; placement checked after every step
 tests/run resize       # windows whose longer side already matches their parent's layout
 tests/run keys         # one press of a move key binding moves the window (needs wtype)
+tests/run focus        # one press of a focus parent/child key changes the focus (needs wtype)
 tests/run cli          # every option and error exit: --help, --once, --dry-run, no SWAYSOCK
 ```
 
 Each case starts its own headless, software-rendered sway, so nothing happens in your session. The tests
-need sway, python3 and kitty, and `tests/run keys` needs wtype. To use another terminal with a
+need sway, python3 and kitty, and `tests/run keys` and `tests/run focus` need wtype. To use another terminal with a
 `--title` option, set `AUTOTILE_TEST_TERMINAL`. `SEEDS="1 2" tests/run sequences` runs a subset, and
 `KEEP=1` keeps the output directory.
 
@@ -134,7 +141,8 @@ focus change must move no window, and a close must make none smaller.
 Issues and pull requests are welcome. Changes to `sway-autotile` should pass `tests/run`. The design
 constraints in [AGENTS.md](AGENTS.md) explain the non-obvious parts: why `split none` is only sent for
 whole runs of split containers, why windows are split even when their parent already has the right
-layout, why a key's move is sometimes sent twice, and why it's one process.
+layout, why a key's move is sometimes sent twice, why a key's focus parent can move focus two levels, and why
+it's one process.
 
 ## Acknowledgements
 

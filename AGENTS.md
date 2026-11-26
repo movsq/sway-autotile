@@ -15,6 +15,7 @@ tests/scenarios.py      # invariants in normal use, no event loops, tab groups i
 tests/sequences.py      # 9 seeded open/focus/close sequences (SEEDS table), placement checked every step
 tests/resize.py         # windows whose longer side already matches their parent's layout
 tests/keys.py           # one press of a `move` key binding moves the window (wtype presses the keys)
+tests/focus.py          # one press of a `focus parent`/`focus child` key changes the focus on screen
 tests/cli.py            # every documented way to run it: --help, --once, --dry-run, plain daemon, errors
 tests/lib.py, events.py # helpers and the placement checks; event logger (counts focus events)
 ```
@@ -24,16 +25,16 @@ tests/lib.py, events.py # helpers and the placement checks; event logger (counts
 ```bash
 ./sway-autotile --once --dry-run   # safe in a live session: prints what it would do, changes nothing
 ./sway-autotile --debug            # logs every command to stderr — run it in a test sway, not a live session
-tests/run                          # all tests, ~5 min; or: scenarios | sequences | resize | keys | cli
+tests/run                          # all tests, ~5 min; or: scenarios | sequences | resize | keys | focus | cli
 SEEDS="1 2" tests/run sequences    # a subset
 ```
 
 ## Testing
 
 - Needs sway, python3 and kitty (`AUTOTILE_TEST_TERMINAL` picks another terminal with a `--title`
-  option); `tests/run keys` also needs wtype and is skipped without it. Each case starts its own
-  headless, software-rendered sway (`WLR_BACKENDS=headless`, `WLR_RENDERER=pixman`) with a fixed
-  2560x1440 output and config, detached from the session it runs in.
+  option); `tests/run keys` and `tests/run focus` also need wtype and are skipped without it. Each
+  case starts its own headless, software-rendered sway (`WLR_BACKENDS=headless`,
+  `WLR_RENDERER=pixman`) with a fixed 2560x1440 output and config, detached from the session it runs in.
   Never point the program or the tests at a live session — windows would move under the user.
 - Every change to `sway-autotile` must pass `tests/run` (all). The placement rule is checked directly
   (`lib.check_open`): after an open, the new window and the window focused before fill that window's old
@@ -80,4 +81,30 @@ SEEDS="1 2" tests/run sequences    # a subset
   repair is the exception: its `mark` and `move container to mark` emit window events, so the daemon
   skips the new window's focus and move events until its tick arrives. The repeated key move emits
   a move event but no binding event, and only binding events repeat moves.
+- A key's `focus parent` can stop on the focused window's wrapper, which looks like the window: on
+  its binding event the daemon moves the focus one level on screen, past one-child split cons
+  (`[con_id=]` matches no workspace: for one it focuses the con below and sends `focus parent`).
+  As with moves, the press's start comes from the event stream, not from a tree read, which can
+  already show the next press: the con focused last per window and workspace focus events and the
+  daemon's own focus commands. If later presses already took the focus beyond the target, it stays.
+  If a press finds the focus still on the window a focus event put it on, a later press of the other
+  key undid it (that window's focus event comes between their binding events): nothing is sent (F9).
+  `swaymsg focus parent` sends no event, so that con is only used while the focus lies in the press's
+  direction from it. Known limit: after `swaymsg focus parent`, a key press that finds the focus past
+  its target can't be told from a burst, so the next key press starts from that target (a `focus
+  child` key can then go two levels). `tests/run focus` F5 stops the daemon while Sway runs two presses.
+- A workspace focus event can restore focus to such a wrapper, and a window opened then lands beside it
+  (a third, not a half), so the daemon focuses the window inside (F2), read from a fresh tree and only
+  while the focus is still on that workspace: `workspace 6; workspace 2` runs both before the daemon
+  reads the first event (F7). Known limit: a workspace switch between the daemon's tree read and its
+  focus command still pulls the focus back; no sway 1.12 criteria can guard it (`workspace=__focused__`
+  only matches while a window has focus). Only a wrapper a focus key went past (or focused on the way
+  to the workspace) is left: one picked with `swaymsg focus parent` stays (F8). Known limit: `swaymsg
+  focus child` onto a wrapper a key went past sends no event either, so on return the daemon still
+  moves the focus off that one. The daemon keeps one such wrapper per workspace, set by a focus key
+  there and dropped by the next window focus there; a key press that changes nothing keeps it (F10).
+  Sway reports `fullscreen_mode` 1 for every workspace, so only a con counts as fullscreen: two presses
+  that Sway itself takes to the workspace still record the wrapper (F11). Workspace events are handled
+  before a move event's result is passed on, so one can't drop a key move's rewrap (on sway 1.12 none
+  came between them in tests).
 - No dependencies beyond the Python standard library (no i3ipc): keep it that way.
