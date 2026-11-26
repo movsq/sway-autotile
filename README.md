@@ -38,7 +38,9 @@ takes half of the focused one, also where autotiling-rs would give it a smaller 
 - Opens a window at the end of the workspace when a focus key selected the whole workspace. sway
   puts it right after the window focused last, so with the left one of two halves it would open
   between them; this way it lands to the right of all of them, whichever window you started from.
-  `open_at_workspace_end = off` in the [config file](#config-file) keeps sway's placement.
+  With `workspace_open = half` in the [config file](#config-file) the new window takes half the
+  workspace along its longer side instead, and the windows already there share the other half in their
+  old layout and proportions. `workspace_open = sway` keeps sway's placement.
 - Removes one-window split containers with `split none` after every focus change, close, move or
   floating toggle. It keeps:
   - the focused window's own container, which decides where the next window goes;
@@ -128,16 +130,16 @@ Each line is `key = value`; blank lines and lines starting with `#` are skipped.
 value stops it with an error that names the line.
 
 ```ini
-# keep sway's placement of a window opened while a focus key selects the whole workspace
-open_at_workspace_end = off
+# a window opened while a focus key selects the whole workspace takes half of it
+workspace_open = half
 ```
 
 | Key | Values | What it does |
 | --- | --- | --- |
-| `open_at_workspace_end` | `on` (default), `off` | open a window at the end of the workspace when a focus key selected the whole workspace |
+| `workspace_open` | `end` (default), `half`, `sway` | where a window goes when it opens while a focus key has the whole workspace selected: after everything there, in half the workspace along its longer side, or where sway puts it |
 
 Each key can also be set in the environment as `SWAY_AUTOTILE_` plus the key in upper case, for example
-`SWAY_AUTOTILE_OPEN_AT_WORKSPACE_END=off sway-autotile --once --dry-run`. A variable wins over the file,
+`SWAY_AUTOTILE_WORKSPACE_OPEN=sway sway-autotile --once --dry-run`. A variable wins over the file,
 and the file wins over the default. An empty variable counts as unset; a bad value or an unknown
 `SWAY_AUTOTILE_` variable stops it with an error. sway's `exec` passes sway's environment on, so a
 variable exported in your shell profile overrides the file.
@@ -150,7 +152,8 @@ tests/run scenarios    # invariants in normal use: no leftover containers, no ev
 tests/run sequences    # 9 seeded open/focus/close sequences; placement checked after every step
 tests/run resize       # windows whose longer side already matches their parent's layout
 tests/run keys         # one press of a move key binding moves the window (needs wtype)
-tests/run focus        # one press of a focus parent/child key changes the focus (needs wtype)
+tests/run focus        # one press of a focus parent/child key changes the focus (needs wtype),
+                       # once per workspace_open value
 tests/run cli          # every option and error exit: --help, --once, --dry-run, --config, no SWAYSOCK
 ```
 
@@ -158,7 +161,7 @@ Each case starts its own headless, software-rendered sway, so nothing happens in
 need sway, python3 and kitty, and `tests/run keys` and `tests/run focus` need wtype. To use another terminal with a
 `--title` option, set `AUTOTILE_TEST_TERMINAL`. `SEEDS="1 2" tests/run sequences` runs a subset, and
 `KEEP=1` keeps the output directory. The tests never read your config file or `SWAY_AUTOTILE_` variables: each case
-gets its own `XDG_CONFIG_HOME` with them unset, and `CONFIG='open_at_workspace_end = off' tests/run focus` gives every case that config.
+gets its own `XDG_CONFIG_HOME` with them unset, and `CONFIG='workspace_open = half' tests/run focus` gives every case that config.
 
 After each window opens, the tests check that the new window and the window focused before it fill the
 old rectangle of the focused window, half each along its longer side, and that no other window moved. A

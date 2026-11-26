@@ -7,7 +7,7 @@
 #   tests/run resize       windows whose longer side already matches their parent's layout
 #   tests/run keys         one key press of a `move` binding moves the window (needs wtype)
 #   tests/run focus        one key press of focus parent/child changes the focus on screen (needs wtype);
-#                          twice: as configured, then with open_at_workspace_end = off
+#                          three times: as configured, then with workspace_open = half and = sway
 #   tests/run cli          every documented way to run it: --help, --once, --dry-run, errors
 #
 # Env: SEEDS="1 2" limits the sequences; KEEP=1 keeps the output dir; CONFIG='key = value' is the
@@ -151,7 +151,8 @@ focus() {
     echo "== focus"
     if command -v wtype >/dev/null; then
         case_ focus "$TESTS/focus.py"
-        CONFIG='open_at_workspace_end = off' case_ focus-off "$TESTS/focus.py"
+        CONFIG='workspace_open = half' case_ focus-half "$TESTS/focus.py"
+        CONFIG='workspace_open = sway' case_ focus-sway "$TESTS/focus.py"
     else
         echo "SKIP focus: wtype not found"
     fi

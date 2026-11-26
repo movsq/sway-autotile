@@ -11,8 +11,8 @@ A key's `focus parent`/`focus child` that stops on a one-child wrapper goes on p
 wrapper looks like the window inside: each press moves the focus one level on screen, also when
 presses come faster than the daemon reads them. Sway can give focus back to a wrapper a key went past
 when you return to a workspace; the window inside gets focus then. A window opened while a key's
-`focus parent` has the whole workspace selected goes to the workspace's end: Sway puts it after the
-child focused last, which can be in the middle (option open_at_workspace_end).
+`focus parent` has the whole workspace selected goes to the workspace's end, or takes half the
+workspace: Sway puts it after the child focused last, which can be in the middle (option workspace_open).
 The split direction rule comes from autotiling-rs (github.com/ammgws/autotiling-rs).
 
 Cleanup: a split wraps the window in a container with that one window inside. Once focus moves on,
@@ -37,9 +37,10 @@ Usage: sway-autotile [--once] [--dry-run] [--debug] [--config PATH]
 
 Config file: $XDG_CONFIG_HOME/sway-autotile/config (default ~/.config/sway-autotile/config), optional.
 One `key = value` per line; blank lines and lines starting with # are ignored. Options:
-  open_at_workspace_end = on|off   a window opened while a focus key has the whole workspace
-                                   selected goes to the workspace's end (default on)
-Each option can also be set as SWAY_AUTOTILE_<KEY> (e.g. SWAY_AUTOTILE_OPEN_AT_WORKSPACE_END=off), which
+  workspace_open = end|half|sway   where a window opened while a focus key has the whole workspace
+                                   selected goes: the workspace's end (default), half the workspace
+                                   along its longer side, or where Sway puts it
+Each option can also be set as SWAY_AUTOTILE_<KEY> (e.g. SWAY_AUTOTILE_WORKSPACE_OPEN=sway), which
 wins over the file; an empty one counts as unset, an unknown one is an error. Sway's `exec` passes
 sway's environment on, so a variable exported in a shell profile overrides the file.
 """
@@ -338,14 +339,19 @@ def plan_open(tree, old_id, new_id):
     return commands, True
 
 
-def plan_append(tree, ws_id, new_id):
+def plan_append(tree, ws_id, new_id, mode):
     """A window opened while workspace `ws_id` itself was focused: Sway puts it right after the
-    workspace's child focused last, which can be in the middle. Move it to the end, where Sway puts
-    it when the last child was focused: outside what was selected, whichever window it came from."""
+    workspace's child focused last, which can be in the middle. mode "end": move it to the end, where
+    Sway puts it when the last child was focused: outside what was selected, whichever window it came
+    from. mode "half": the window takes half the workspace along its longer side, after the rest."""
     by_id, parent_of = tree_index(tree)
-    ws = by_id.get(ws_id)
-    if not ws or parent_of.get(new_id) is not ws or ws["layout"] not in SPLITS:
+    ws, new = by_id.get(ws_id), by_id.get(new_id)
+    if not ws or not new or parent_of.get(new_id) is not ws or ws["layout"] not in SPLITS:
         return []
+    if new.get("fullscreen_mode"):
+        return []  # a directional move of a fullscreen window goes to the next output
+    if mode == "half":
+        return plan_half(ws, new_id)
     last = ws["nodes"][-1]
     if last["id"] == new_id:
         return []
@@ -356,6 +362,30 @@ def plan_append(tree, ws_id, new_id):
         # Moved to a container's mark, the window goes in as its last child: one step on, out after it.
         commands.append(f"[con_id={new_id}] move {'right' if ws['layout'] == 'splith' else 'down'}")
     return commands
+
+
+def plan_half(ws, new_id):
+    """Wrap the workspace's other children in one container that keeps their layout and sizes, and put
+    the new window after it, half each along the workspace's longer side."""
+    want = split_layout(ws)
+    others = [c for c in ws["nodes"] if c["id"] != new_id]
+    if len(others) == 1:
+        # Sway put the window after the one child, focused last: only the direction can be wrong.
+        return [f"[con_id={new_id}] layout {want}"] if ws["layout"] != want else []
+    new = next(c for c in ws["nodes"] if c["id"] == new_id)
+    if not (new["focused"] or ws["focused"]):
+        return []  # the focus went elsewhere meanwhile: the workspace's `split` below needs it here
+    # A focused workspace's `split` wraps all its children, the new one too, in a con with the
+    # workspace's old layout; a directional move takes the new window out after that con. Across
+    # that con's own direction it goes out from any position, so the con turns across for the move.
+    commands = [f"[con_id={new_id}] focus parent", f"split {want[5]}"]
+    across = "splitv" if want == "splith" else "splith"
+    if ws["layout"] != across:
+        commands.append(f"[con_id={new_id}] layout {across}")
+    commands.append(f"[con_id={new_id}] move {'right' if want == 'splith' else 'down'}")
+    if ws["layout"] != across:
+        commands.append(f"[con_id={others[0]['id']}] layout {ws['layout']}")
+    return commands + ([f"[con_id={new_id}] focus"] if new["focused"] else [])  # no_focus: on the workspace
 
 
 def run_pass(sock, tree, dry_run, debug, moved=False):
@@ -410,13 +440,15 @@ def run_commands(sock, commands, dry_run, debug):
     return success
 
 
-def on_off(value):
-    if value not in ("on", "off"):
-        raise ValueError(f"expected on or off, got {value!r}")
-    return value == "on"
+def one_of(*values):
+    def parse(value):
+        if value not in values:
+            raise ValueError(f"expected {', '.join(values[:-1])} or {values[-1]}, got {value!r}")
+        return value
+    return parse
 
 
-OPTIONS = {"open_at_workspace_end": (True, on_off)}  # config key -> (default, parser of its value)
+OPTIONS = {"workspace_open": ("end", one_of("end", "half", "sway"))}  # config key -> (default, parser of its value)
 ENV_PREFIX = "SWAY_AUTOTILE_"  # + the key upper-cased: overrides the file
 
 
@@ -486,7 +518,7 @@ def main():
     if unknown:
         sys.exit(f"sway-autotile: unknown option(s): {' '.join(sorted(unknown))} (see --help)")
     dry_run, debug = "--dry-run" in args, "--debug" in args
-    open_at_end = load_options(config_path)["open_at_workspace_end"]
+    workspace_open = load_options(config_path)["workspace_open"]
 
     sock = connect()
     if "--once" in args:
@@ -558,7 +590,7 @@ def main():
                 if restore:
                     restores[ws] = restore
                 node = tree_index(tree)[0].get(base)
-                selected = base if open_at_end and node and node["type"] == "workspace" else None
+                selected = base if workspace_open != "sway" and node and node["type"] == "workspace" else None
                 run_commands(sock, commands, dry_run, debug)
             elif moved and not pending:
                 # A key ran `move <dir>` and only took the tile out of its wrapper: move it as the
@@ -598,9 +630,10 @@ def main():
             continue
         change, node_id = event["change"], event["container"]["id"]
         if change == "new":
-            commands = plan_append(request(sock, GET_TREE), selected, node_id) if selected else []
+            commands = plan_append(request(sock, GET_TREE), selected, node_id, workspace_open) if selected else []
             if commands:
                 # Its focus event, read next, prepares it; the tree read then already shows it moved.
+                # "half" ends on the window's own focus command: the same focus event, one more.
                 run_commands(sock, commands, dry_run, debug)
             elif previous:
                 tree = request(sock, GET_TREE)
