@@ -12,7 +12,7 @@ wrapper looks like the window inside: each press moves the focus one level on sc
 presses come faster than the daemon reads them. Sway can give focus back to a wrapper a key went past
 when you return to a workspace; the window inside gets focus then. A window opened while a key's
 `focus parent` has the whole workspace selected goes to the workspace's end: Sway puts it after the
-child focused last, which can be in the middle.
+child focused last, which can be in the middle (option open_at_workspace_end).
 The split direction rule comes from autotiling-rs (github.com/ammgws/autotiling-rs).
 
 Cleanup: a split wraps the window in a container with that one window inside. Once focus moves on,
@@ -29,10 +29,19 @@ One process does both, one event after another, so a cleanup can never remove a 
 a window focused in the meantime (which two separate daemons could). `split`, `layout` and
 `split none` on a target emit no window event and move no focus, so nothing loops.
 
-Usage: sway-autotile [--once] [--dry-run] [--debug]
-  --once      one pass over the current tree, then exit
-  --dry-run   print the commands instead of running them
-  --debug     log every command to stderr
+Usage: sway-autotile [--once] [--dry-run] [--debug] [--config PATH]
+  --once           one pass over the current tree, then exit
+  --dry-run        print the commands instead of running them
+  --debug          log every command to stderr
+  --config PATH    read options from PATH instead of the default file
+
+Config file: $XDG_CONFIG_HOME/sway-autotile/config (default ~/.config/sway-autotile/config), optional.
+One `key = value` per line; blank lines and lines starting with # are ignored. Options:
+  open_at_workspace_end = on|off   a window opened while a focus key has the whole workspace
+                                   selected goes to the workspace's end (default on)
+Each option can also be set as SWAY_AUTOTILE_<KEY> (e.g. SWAY_AUTOTILE_OPEN_AT_WORKSPACE_END=off), which
+wins over the file; an empty one counts as unset, an unknown one is an error. Sway's `exec` passes
+sway's environment on, so a variable exported in a shell profile overrides the file.
 """
 import json
 import os
@@ -401,8 +410,75 @@ def run_commands(sock, commands, dry_run, debug):
     return success
 
 
+def on_off(value):
+    if value not in ("on", "off"):
+        raise ValueError(f"expected on or off, got {value!r}")
+    return value == "on"
+
+
+OPTIONS = {"open_at_workspace_end": (True, on_off)}  # config key -> (default, parser of its value)
+ENV_PREFIX = "SWAY_AUTOTILE_"  # + the key upper-cased: overrides the file
+
+
+def load_config(path):
+    """The options from `path`, or from the default file if `path` is None (a missing one is fine)."""
+    config = {key: default for key, (default, _) in OPTIONS.items()}
+    if path is None:
+        base = os.environ.get("XDG_CONFIG_HOME") or os.path.join(os.path.expanduser("~"), ".config")
+        path = os.path.join(base, "sway-autotile", "config")
+        if not os.path.exists(path):
+            return config
+    try:
+        with open(path, encoding="utf-8") as f:
+            lines = f.read().splitlines()
+    except (OSError, UnicodeDecodeError) as e:
+        sys.exit(f"sway-autotile: {path}: {getattr(e, 'strerror', None) or e}")
+    for number, line in enumerate(lines, 1):
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        key, sep, value = line.partition("=")
+        key, value = key.strip(), value.strip()
+        if not sep:
+            sys.exit(f"sway-autotile: {path}:{number}: expected `key = value`, got {line!r}")
+        if key not in OPTIONS:
+            sys.exit(f"sway-autotile: {path}:{number}: unknown key {key!r}")
+        try:
+            config[key] = OPTIONS[key][1](value)
+        except ValueError as e:
+            sys.exit(f"sway-autotile: {path}:{number}: {key}: {e}")
+    return config
+
+
+def load_options(path):
+    """The config file's options, each overridden by its SWAY_AUTOTILE_<KEY> variable if that is set
+    and not empty."""
+    config = load_config(path)
+    for name, value in sorted(os.environ.items()):
+        if not name.startswith(ENV_PREFIX) or not value:
+            continue
+        key = name[len(ENV_PREFIX):].lower()
+        if key not in OPTIONS or name != ENV_PREFIX + key.upper():
+            sys.exit(f"sway-autotile: unknown variable {name} (see --help)")
+        try:
+            config[key] = OPTIONS[key][1](value)
+        except ValueError as e:
+            sys.exit(f"sway-autotile: {name}: {e}")
+    return config
+
+
 def main():
-    args = set(sys.argv[1:])
+    argv, args, config_path = sys.argv[1:], set(), None
+    while argv:
+        arg = argv.pop(0)
+        if arg == "--config":
+            if not argv:
+                sys.exit("sway-autotile: --config needs a path (see --help)")
+            config_path = argv.pop(0)
+        elif arg.startswith("--config="):
+            config_path = arg[len("--config="):]
+        else:
+            args.add(arg)
     if {"-h", "--help"} & args:
         print("Usage: " + __doc__.split("Usage:")[1].strip())
         return
@@ -410,6 +486,7 @@ def main():
     if unknown:
         sys.exit(f"sway-autotile: unknown option(s): {' '.join(sorted(unknown))} (see --help)")
     dry_run, debug = "--dry-run" in args, "--debug" in args
+    open_at_end = load_options(config_path)["open_at_workspace_end"]
 
     sock = connect()
     if "--once" in args:
@@ -481,7 +558,7 @@ def main():
                 if restore:
                     restores[ws] = restore
                 node = tree_index(tree)[0].get(base)
-                selected = base if node and node["type"] == "workspace" else None
+                selected = base if open_at_end and node and node["type"] == "workspace" else None
                 run_commands(sock, commands, dry_run, debug)
             elif moved and not pending:
                 # A key ran `move <dir>` and only took the tile out of its wrapper: move it as the

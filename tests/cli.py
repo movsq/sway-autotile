@@ -9,13 +9,20 @@ so each section runs the program itself.
   6 daemon --dry-run           prints a pass per event, changes nothing
   7 daemon without options     splits and cleans up, logs nothing
   8 daemon startup             the first open halves an already focused tile
+  9 --config FILE              a valid file (on, off, comments, --config=FILE): runs as without it
+ 10 --config errors            missing file, no path, unknown key, bad value, line without `=`:
+                               error naming the file and line, exit != 0, also without SWAYSOCK
+ 11 default config file        found in $XDG_CONFIG_HOME, else ~/.config; no file at all: defaults
+ 12 SWAY_AUTOTILE_<KEY>        overrides the file and the default; empty counts as unset; a bad value
+                               or an unknown SWAY_AUTOTILE_* variable: error naming it, exit != 0
 """
 import os
 import subprocess
 import sys
+import tempfile
 import time
 
-from lib import PROGRAM, check, check_open, cmd, finish, parents, result, spawn, tree, wid
+from lib import PROGRAM, check, check_open, cmd, finish, load_program, parents, result, spawn, tree, wid
 
 
 def run(*args, env=None):
@@ -119,5 +126,129 @@ try:
 finally:
     daemon.terminate()
     daemon.wait(timeout=10)
+
+tmp = tempfile.TemporaryDirectory()
+
+
+def config_file(name, text):
+    path = os.path.join(tmp.name, name)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w") as f:
+        f.write(text)
+    return path
+
+
+print("== 9 --config with a valid file")
+for name, text in (("on", "open_at_workspace_end = on\n"),
+                   ("off-comments", "# a comment\n\n   open_at_workspace_end=off  \n  # indented\n"),
+                   ("empty", "")):
+    path = config_file(name, text)
+    for args in (("--config", path), (f"--config={path}",)):
+        before = ws_shape()
+        p = run("--once", "--dry-run", *args)
+        result(p.returncode == 0 and not p.stderr and ws_shape() == before,
+               f"9 {name}, {' '.join(args).replace(path, 'FILE')}: exit 0, tree unchanged "
+               f"(rc {p.returncode}, err {p.stderr[-200:]!r})")
+path = config_file("daemon", "open_at_workspace_end = off\n")
+daemon = subprocess.Popen([sys.executable, "-B", PROGRAM, "--config", path], stdout=subprocess.PIPE,
+                          stderr=subprocess.PIPE, text=True)
+time.sleep(1)
+result(daemon.poll() is None, "9 the daemon runs with --config FILE")
+daemon.terminate()
+out, err = daemon.communicate(timeout=10)
+result(not err, f"9 daemon: nothing on stderr ({err[-200:]!r})")
+
+print("== 10 --config errors")
+no_sock = {k: v for k, v in os.environ.items() if k not in ("SWAYSOCK", "I3SOCK")}
+missing = os.path.join(tmp.name, "missing")
+cases = [("missing file", ("--config", missing), f"{missing}: No such file or directory"),
+         ("missing file, --config=", (f"--config={missing}",), f"{missing}: No such file or directory"),
+         ("directory", ("--config", tmp.name), f"{tmp.name}: Is a directory"),
+         ("no path", ("--config",), "--config needs a path (see --help)")]
+for name, text, problem in (
+        ("unknown key", "# ok\nopen_at_workspace_end = on\nbogus = on\n", "3: unknown key 'bogus'"),
+        ("bad value", "\nopen_at_workspace_end = yes\n", "2: open_at_workspace_end: expected on or off, got 'yes'"),
+        ("capitalized value", "open_at_workspace_end = On\n", "1: open_at_workspace_end: expected on or off, got 'On'"),
+        ("no value", "open_at_workspace_end =\n", "1: open_at_workspace_end: expected on or off, got ''"),
+        ("line without =", "# ok\n\nopen_at_workspace_end on\n",
+         "3: expected `key = value`, got 'open_at_workspace_end on'")):
+    path = config_file(name.replace(" ", "-"), text)
+    cases.append((name, ("--config", path), f"{path}:{problem}"))
+for label, args, message in cases:
+    for env, where in ((None, ""), (no_sock, ", no SWAYSOCK")):
+        p = run("--once", "--dry-run", *args, env=env)
+        result(p.returncode != 0 and p.stderr.strip() == f"sway-autotile: {message}" and not p.stdout,
+               f"10 {label}{where}: error, exit {p.returncode}: {p.stderr.strip()!r}")
+
+print("== 11 default config file")
+for label, xdg, home in (("XDG_CONFIG_HOME", "xdg", "home-unused"), ("XDG_CONFIG_HOME empty", "", "home"),
+                         ("XDG_CONFIG_HOME unset", None, "home")):
+    env = {k: v for k, v in os.environ.items() if k != "XDG_CONFIG_HOME"}
+    env["HOME"] = os.path.join(tmp.name, home)
+    if xdg is not None:
+        env["XDG_CONFIG_HOME"] = os.path.join(tmp.name, xdg) if xdg else ""
+    default = os.path.join(env.get("XDG_CONFIG_HOME") or os.path.join(env["HOME"], ".config"), "sway-autotile",
+                           "config")
+    config_file(default, "bogus = on\n")
+    p = run("--once", "--dry-run", env=env)
+    result(p.returncode != 0 and p.stderr.strip() == f"sway-autotile: {default}:1: unknown key 'bogus'",
+           f"11 {label}: reads {os.path.relpath(default, tmp.name)} (rc {p.returncode}, {p.stderr.strip()!r})")
+    config_file(default, "open_at_workspace_end = off\n")
+    p = run("--once", "--dry-run", env=env)
+    result(p.returncode == 0 and not p.stderr, f"11 {label}: a valid file, exit 0 ({p.stderr[-200:]!r})")
+env = {k: v for k, v in os.environ.items() if k != "XDG_CONFIG_HOME"}
+env["HOME"] = os.path.join(tmp.name, "home-none")
+for label, xdg in (("no file in XDG_CONFIG_HOME or ~/.config", os.path.join(tmp.name, "xdg-none")),
+                   ("no file in ~/.config", None)):
+    if xdg:
+        env["XDG_CONFIG_HOME"] = xdg
+    else:
+        env.pop("XDG_CONFIG_HOME", None)
+    before = ws_shape()
+    p = run("--once", "--dry-run", env=env)
+    result(p.returncode == 0 and not p.stderr and ws_shape() == before,
+           f"11 {label}: defaults, exit 0 (rc {p.returncode}, err {p.stderr[-200:]!r})")
+print("== 12 SWAY_AUTOTILE_<KEY> variables")
+program = load_program()                     # load_options() reads os.environ: set it per check
+clean = {k: v for k, v in os.environ.items() if not k.startswith("SWAY_AUTOTILE_")}
+on, off = config_file("env-on", "open_at_workspace_end = on\n"), config_file("env-off", "open_at_workspace_end = off\n")
+missing_default = {"XDG_CONFIG_HOME": os.path.join(tmp.name, "xdg-none")}
+for label, path, env, want in (
+        ("off overrides the file's on", on, {"SWAY_AUTOTILE_OPEN_AT_WORKSPACE_END": "off"}, False),
+        ("on overrides the file's off", off, {"SWAY_AUTOTILE_OPEN_AT_WORKSPACE_END": "on"}, True),
+        ("off overrides the default", None, {**missing_default, "SWAY_AUTOTILE_OPEN_AT_WORKSPACE_END": "off"}, False),
+        ("empty keeps the file's off", off, {"SWAY_AUTOTILE_OPEN_AT_WORKSPACE_END": ""}, False),
+        ("empty keeps the default", None, {**missing_default, "SWAY_AUTOTILE_OPEN_AT_WORKSPACE_END": ""}, True),
+        ("unset: the file's off", off, {}, False)):
+    saved = dict(os.environ)
+    os.environ.clear()
+    os.environ.update(clean, **env)
+    try:
+        got = program.load_options(path)["open_at_workspace_end"]
+    finally:
+        os.environ.clear()
+        os.environ.update(saved)
+    result(got is want, f"12 {label}: open_at_workspace_end {got} (expected {want})")
+for label, env in (("empty", {"SWAY_AUTOTILE_OPEN_AT_WORKSPACE_END": ""}),
+                   ("empty unknown", {"SWAY_AUTOTILE_BOGUS": ""}),
+                   ("valid", {"SWAY_AUTOTILE_OPEN_AT_WORKSPACE_END": "off"})):
+    before = ws_shape()
+    p = run("--once", "--dry-run", "--config", on, env={**clean, **env})
+    result(p.returncode == 0 and not p.stderr and ws_shape() == before,
+           f"12 {label} variable: exit 0, tree unchanged (rc {p.returncode}, err {p.stderr[-200:]!r})")
+no_sock = {k: v for k, v in clean.items() if k not in ("SWAYSOCK", "I3SOCK")}
+for label, env, message in (
+        ("bad value", {"SWAY_AUTOTILE_OPEN_AT_WORKSPACE_END": "yes"},
+         "SWAY_AUTOTILE_OPEN_AT_WORKSPACE_END: expected on or off, got 'yes'"),
+        ("bad value with spaces", {"SWAY_AUTOTILE_OPEN_AT_WORKSPACE_END": " on"},
+         "SWAY_AUTOTILE_OPEN_AT_WORKSPACE_END: expected on or off, got ' on'"),
+        ("unknown variable", {"SWAY_AUTOTILE_BOGUS": "on"}, "unknown variable SWAY_AUTOTILE_BOGUS (see --help)"),
+        ("lower-case name", {"SWAY_AUTOTILE_open_at_workspace_end": "on"},
+         "unknown variable SWAY_AUTOTILE_open_at_workspace_end (see --help)")):
+    for base, where in ((clean, ""), (no_sock, ", no SWAYSOCK")):
+        p = run("--once", "--dry-run", "--config", on, env={**base, **env})
+        result(p.returncode != 0 and p.stderr.strip() == f"sway-autotile: {message}" and not p.stdout,
+               f"12 {label}{where}: error, exit {p.returncode}: {p.stderr.strip()!r}")
+tmp.cleanup()
 
 finish()

@@ -26,6 +26,8 @@ workspace 9, workspace 9`; wtype presses them.
   F12 focus parent from the left of two windows selects the workspace: a new window opens right of both,
       as it does from the right one (Sway alone puts it after the window focused last, between them)
   F13 the same with a split group last on the workspace: the new window opens right of the group
+  With open_at_workspace_end = off (`tests/run focus` runs this file both ways), F12 and F13 check Sway's
+  placement instead: the new window opens right after the window focused last.
 """
 import json
 import os
@@ -33,7 +35,7 @@ import signal
 import subprocess
 import time
 
-from lib import by_title, check, check_open, check_still, cmd, finish, geom_by_title, msg, nodes, parents, result, spawn, tree, wid
+from lib import by_title, check, check_open, check_still, cmd, finish, geom_by_title, msg, nodes, option, parents, result, spawn, tree, wid
 
 
 DAEMON = int(os.environ.get("AUTOTILE_DAEMON_PID") or 0)  # the daemon `run` started for this case
@@ -224,7 +226,16 @@ def rects(t, titles):
     return [g.get(title) for title in titles]
 
 
-print("== F12 focus parent on the workspace from the left window, then open")
+def slot_of(t, title):
+    """Index of the workspace child that holds window `title`."""
+    parent_of, node = parents(t), by_title(t, title)
+    while parent_of[node["id"]]["type"] != "workspace":
+        node = parent_of[node["id"]]
+    return [c["id"] for c in parent_of[node["id"]]["nodes"]].index(node["id"])
+
+
+AT_END = option("open_at_workspace_end")  # off: Sway's placement, right after the window focused last
+print(f"== F12 focus parent on the workspace from the left window, then open (open_at_workspace_end {'on' if AT_END else 'off'})")
 # Sway puts a window opened on a focused workspace after the child focused last there; the daemon
 # moves it to the end, as with the last child focused (workspace 13: Sway's own result).
 for ws, start in ((12, "k1"), (13, "l2")):
@@ -237,8 +248,10 @@ for ws, start in ((12, "k1"), (13, "l2")):
     spawn(p + "3")
     t = check(f"F12 open {p}3")
     result(by_title(t, p + "3")["focused"], f"F12 {p}3 focused")
-got, want = rects(t, ["k1", "k2", "k3"]), rects(t, ["l1", "l2", "l3"])
-result(got == want, f"F12 k3 opens right of k1 and k2 like l3 does: {got}" + ("" if got == want else f", expected {want}"))
+got, want = rects(t, ["k1", "k2", "k3"] if AT_END else ["k1", "k3", "k2"]), rects(t, ["l1", "l2", "l3"])
+where = "right of k1 and k2 like l3 does" if AT_END else "between k1 and k2, Sway's placement"
+result(slot_of(t, "k3") == (2 if AT_END else 1) and got == want,
+       f"F12 k3 opens {where}: {got}, slot {slot_of(t, 'k3')}" + ("" if got == want else f", expected {want}"))
 
 print("== F13 the same with a split group last on the workspace")
 for ws, presses in ((14, 1), (15, 2)):
@@ -254,7 +267,12 @@ for ws, presses in ((14, 1), (15, 2)):
         press_and_check(f"F13 focus parent on {ws} ({i + 1})", [p + "1", p + "2", p + "3"] if ws == 14 or i else ["n2", "n3"])
     spawn(p + "4")
     t = check(f"F13 open {p}4")
-got, want = rects(t, ["m1", "m2", "m3", "m4"]), rects(t, ["n1", "n2", "n3", "n4"])
-result(got == want, f"F13 m4 opens right of the group like n4 does: {got}" + ("" if got == want else f", expected {want}"))
+if AT_END:
+    got, want = rects(t, ["m1", "m2", "m3", "m4"]), rects(t, ["n1", "n2", "n3", "n4"])
+    result(slot_of(t, "m4") == 2 and got == want,
+           f"F13 m4 opens right of the group like n4 does: {got}" + ("" if got == want else f", expected {want}"))
+else:
+    got = [slot_of(t, w) for w in ("m1", "m4", "m2", "m3")]
+    result(got == [0, 1, 2, 2], f"F13 m4 opens between m1 and the group, Sway's placement: slots {got}")
 
 finish()

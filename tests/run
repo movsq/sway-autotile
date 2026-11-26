@@ -6,10 +6,12 @@
 #   tests/run sequences    9 seeded open/focus/close sequences, placement rules checked at every step
 #   tests/run resize       windows whose longer side already matches their parent's layout
 #   tests/run keys         one key press of a `move` binding moves the window (needs wtype)
-#   tests/run focus        one key press of focus parent/child changes the focus on screen (needs wtype)
+#   tests/run focus        one key press of focus parent/child changes the focus on screen (needs wtype);
+#                          twice: as configured, then with open_at_workspace_end = off
 #   tests/run cli          every documented way to run it: --help, --once, --dry-run, errors
 #
-# Env: SEEDS="1 2" limits the sequences; KEEP=1 keeps the output dir;
+# Env: SEEDS="1 2" limits the sequences; KEEP=1 keeps the output dir; CONFIG='key = value' is the
+#      config file every case's program reads (default: none; never the user's own file or SWAY_AUTOTILE_*);
 #      AUTOTILE_TEST_TERMINAL (default kitty) = the client that opens windows (needs a --title option).
 # Needs: sway, python3, kitty (or the terminal above); wtype for `keys` and `focus` (skipped without it).
 # shellcheck disable=SC2329  # cleanup and the test functions are called indirectly (trap, "$1")
@@ -80,14 +82,24 @@ trap cleanup EXIT
 # case_ NAME SCRIPT ARGS… — fresh sway, event logger, ./sway-autotile --debug, then the test script;
 # then sway stops and the daemon must exit with it. DAEMON=0 case_ … starts no daemon (the script runs
 # the program itself). Runs in a subshell so the sway sockets never leak into the next case.
+# XDG_CONFIG_HOME is the case's own dir and SWAY_AUTOTILE_* is unset, so the program never reads the
+# user's settings; CONFIG='key = value' case_ … writes CONFIG (lines separated by newlines) into the
+# config file there, default: no file.
 case_() {
     local name=$1; shift
     local daemon=${DAEMON:-1}
     local dir="$OUT/$name"
     mkdir -p "$dir"
     (
+        local var
+        for var in $(compgen -v SWAY_AUTOTILE_); do unset "$var"; done  # they override the config file
         start_sway "$dir" || { echo "FAIL $name: sway did not start"; exit 1; }
         trap stop_sway EXIT
+        export XDG_CONFIG_HOME="$dir/xdg"  # after start_sway: the windows sway starts keep the real one
+        if [[ -n ${CONFIG:-} ]]; then
+            mkdir -p "$XDG_CONFIG_HOME/sway-autotile"
+            printf '%s\n' "$CONFIG" >"$XDG_CONFIG_HOME/sway-autotile/config"
+        fi
         : >"$dir/events"
         python3 -B "$TESTS/events.py" "$dir/events" &
         local pid="" rc=0 failed=0
@@ -137,7 +149,12 @@ keys() {
 
 focus() {
     echo "== focus"
-    if command -v wtype >/dev/null; then case_ focus "$TESTS/focus.py"; else echo "SKIP focus: wtype not found"; fi
+    if command -v wtype >/dev/null; then
+        case_ focus "$TESTS/focus.py"
+        CONFIG='open_at_workspace_end = off' case_ focus-off "$TESTS/focus.py"
+    else
+        echo "SKIP focus: wtype not found"
+    fi
 }
 
 cli() { echo "== cli"; DAEMON=0 case_ cli "$TESTS/cli.py"; }
@@ -145,7 +162,7 @@ cli() { echo "== cli"; DAEMON=0 case_ cli "$TESTS/cli.py"; }
 case ${1:-all} in
     all) scenarios; sequences; resize; keys; focus; cli ;;
     scenarios|sequences|resize|keys|focus|cli) "$1" ;;
-    *) sed -n '2,14p' "$0"; exit 2 ;;
+    *) sed -n '2,16p' "$0"; exit 2 ;;
 esac
 echo
 if [[ $FAILED == 0 ]]; then echo "ALL PASSED"; else echo "SOME TESTS FAILED"; fi

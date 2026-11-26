@@ -15,8 +15,9 @@ tests/scenarios.py      # invariants in normal use, no event loops, tab groups i
 tests/sequences.py      # 9 seeded open/focus/close sequences (SEEDS table), placement checked every step
 tests/resize.py         # windows whose longer side already matches their parent's layout
 tests/keys.py           # one press of a `move` key binding moves the window (wtype presses the keys)
-tests/focus.py          # one press of a `focus parent`/`focus child` key changes the focus on screen
-tests/cli.py            # every documented way to run it: --help, --once, --dry-run, plain daemon, errors
+tests/focus.py          # one press of a `focus parent`/`focus child` key changes the focus on screen;
+                       # run twice, the second time with open_at_workspace_end = off (F12, F13 check both)
+tests/cli.py            # every documented way to run it: --help, --once, --dry-run, --config, daemon, errors
 tests/lib.py, events.py # helpers and the placement checks; event logger (counts focus events)
 ```
 
@@ -27,6 +28,7 @@ tests/lib.py, events.py # helpers and the placement checks; event logger (counts
 ./sway-autotile --debug            # logs every command to stderr — run it in a test sway, not a live session
 tests/run                          # all tests, ~5 min; or: scenarios | sequences | resize | keys | focus | cli
 SEEDS="1 2" tests/run sequences    # a subset
+CONFIG='open_at_workspace_end = off' tests/run focus   # every case's program reads this config file
 ```
 
 ## Testing
@@ -36,6 +38,11 @@ SEEDS="1 2" tests/run sequences    # a subset
   case starts its own headless, software-rendered sway (`WLR_BACKENDS=headless`,
   `WLR_RENDERER=pixman`) with a fixed 2560x1440 output and config, detached from the session it runs in.
   Never point the program or the tests at a live session — windows would move under the user.
+- `case_` unsets every `SWAY_AUTOTILE_*` variable and sets `XDG_CONFIG_HOME` to the case's own dir
+  (after sway starts, so windows keep the real one), so the program never reads the user's settings;
+  `CONFIG='key = value'` (lines separated by newlines) writes the config file there. Options live in
+  `OPTIONS` (key → default, value parser); each gets its `SWAY_AUTOTILE_<KEY>` variable from there.
+  The tests' own variables use the `AUTOTILE_` prefix: keep them out of `SWAY_AUTOTILE_`.
 - Every change to `sway-autotile` must pass `tests/run` (all). The placement rule is checked directly
   (`lib.check_open`): after an open, the new window and the window focused before fill that window's old
   rectangle, half each along its longer side, and no other window moves; a focus moves nothing; a close

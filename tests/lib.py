@@ -1,4 +1,6 @@
 """Shared helpers for the tests. They run inside the headless sway that `run` starts (SWAYSOCK points at it)."""
+import importlib.machinery
+import importlib.util
 import json
 import os
 import subprocess
@@ -9,6 +11,19 @@ EVENTS = os.environ.get("AUTOTILE_EVENTS", "")  # file written by events.py, one
 TERMINAL = os.environ.get("AUTOTILE_TEST_TERMINAL", "kitty")
 PROGRAM = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "sway-autotile")
 GAP = 8  # "gaps inner" in the sway config that `run` writes; with smart_gaps a lone window has none
+
+
+def load_program():
+    """The program as a module, for its functions (load_options reads os.environ)."""
+    loader = importlib.machinery.SourceFileLoader("sway_autotile", PROGRAM)
+    module = importlib.util.module_from_spec(importlib.util.spec_from_loader("sway_autotile", loader))
+    loader.exec_module(module)
+    return module
+
+
+def option(key):
+    """The value of a config option as the daemon of this case reads it (tests/run's CONFIG)."""
+    return load_program().load_options(None)[key]
 
 
 def msg(*args):
