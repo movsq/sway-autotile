@@ -328,7 +328,14 @@ def orient_pair(parent, old_id):
     # A resize can change the old tile's longer side without sending a window event. Use the
     # combined rectangle of the pair, which still occupies the old tile's space.
     want = split_layout(parent)
-    return [f"[con_id={old_id}] layout {want}"] if parent["layout"] != want else []
+    if parent["layout"] == want:
+        return []
+    if parent["type"] == "workspace":
+        # `layout` on a workspace's child wraps all its children in a new con, so it goes to the
+        # workspace itself, then focus returns to whichever tile had it.
+        focused = next((c["id"] for c in parent["nodes"] if c["focused"]), old_id)
+        return [f"[con_id={old_id}] focus parent", f"layout {want}", f"[con_id={focused}] focus"]
+    return [f"[con_id={old_id}] layout {want}"]
 
 
 def plan_open(tree, old_id, new_id):

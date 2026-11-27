@@ -91,8 +91,10 @@ CONFIG='workspace_open = half' tests/run scenarios   # the program reads this co
   including when Sway keeps focus on the old tile. Scenarios 12–14 cover moves, manual `split none`,
   and opens that keep focus on the old tile.
 - Sway can resize the focused tile without sending a window event. On `new`, recheck the direction
-  using the rectangle occupied by the pair if it already shares a split. The F and M cases in
-  `tests/run resize` check an open after a resize without refocusing, including after a move.
+  using the rectangle occupied by the pair if it already shares a split; when the pair's parent is a
+  workspace, change the workspace layout via `focus parent; layout; focus` so Sway doesn't wrap both
+  in an extra container. The F, M and W cases in `tests/run resize` check an open after a resize or
+  workspace layout change without refocusing, including after a move.
 - `split`, `layout` and `split none` aimed at a con with `[con_id=]` emit no window event and don't move
   focus → no loop. `tests/scenarios.py` section 10: 30 focus commands → exactly 30 focus events. The open
   repair is the exception: its `mark` and `move container to mark` emit window events, so the daemon
