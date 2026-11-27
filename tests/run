@@ -1,15 +1,19 @@
 #!/usr/bin/env bash
 # tests/run — run the tests, each case in its own headless sway (never the session you're in).
 #
-#   tests/run [all]        scenarios + sequences + resize + keys + focus + cli against ./sway-autotile (~5 min)
+#   tests/run [all]        scenarios + sequences + resize + keys + focus + cli against ./sway-autotile (~9 min)
 #   tests/run scenarios    invariants in normal use, no event loops, tab groups intact
 #   tests/run sequences    9 seeded open/focus/close sequences, placement rules checked at every step
 #   tests/run resize       windows whose longer side already matches their parent's layout
 #   tests/run keys         one key press of a `move` binding moves the window (needs wtype)
-#   tests/run focus        one key press of focus parent/child changes the focus on screen (needs wtype)
-#   tests/run cli          every documented way to run it: --help, --once, --dry-run, errors
+#   tests/run focus        one key press of focus parent/child changes the focus on screen (needs wtype);
+#                          three times: workspace_open unset (end), = half, = sway (not from CONFIG)
+#   tests/run cli          every documented way to run it: --help, --once, --dry-run, --config,
+#                          --check-config, warnings, errors
 #
-# Env: SEEDS="1 2" limits the sequences; KEEP=1 keeps the output dir;
+# Env: SEEDS="1 2" limits the sequences; KEEP=1 keeps the output dir; CONFIG='key = value' is the
+#      config file the program reads in every case but focus, which sets its own (default: none; never
+#      the user's own file or any SWAY_AUTOTILE_* variable, which are removed from every case's environment);
 #      AUTOTILE_TEST_TERMINAL (default kitty) = the client that opens windows (needs a --title option).
 # Needs: sway, python3, kitty (or the terminal above); wtype for `keys` and `focus` (skipped without it).
 # shellcheck disable=SC2329  # cleanup and the test functions are called indirectly (trap, "$1")
@@ -45,6 +49,7 @@ bindsym Mod4+Shift+l move right
 bindsym Mod4+a focus parent
 bindsym Mod4+Shift+a focus child
 bindsym Mod4+m move container to workspace 9, workspace 9
+no_focus [title="^nf"]
 exec sh -c 'env | grep -E "^(WAYLAND_DISPLAY|SWAYSOCK)=" > "$dir/env.tmp" && mv "$dir/env.tmp" "$dir/env"'
 EOF
     env -u WAYLAND_DISPLAY -u SWAYSOCK -u I3SOCK -u DISPLAY \
@@ -80,24 +85,38 @@ trap cleanup EXIT
 # case_ NAME SCRIPT ARGS… — fresh sway, event logger, ./sway-autotile --debug, then the test script;
 # then sway stops and the daemon must exit with it. DAEMON=0 case_ … starts no daemon (the script runs
 # the program itself). Runs in a subshell so the sway sockets never leak into the next case.
+# XDG_CONFIG_HOME is the case's own dir and every SWAY_AUTOTILE_* name is removed from the python
+# processes' environment (`env -u`, also names that aren't shell identifiers), so the program never
+# reads the user's settings; CONFIG='key = value' case_ … writes CONFIG (lines separated by newlines)
+# into the config file there, default: no file. AUTOTILE_* variables pass through. The test script gets
+# AUTOTILE_SWAY_CONFIG, the case's sway config: a config-only setting goes there, then `swaymsg reload`.
 case_() {
     local name=$1; shift
     local daemon=${DAEMON:-1}
     local dir="$OUT/$name"
     mkdir -p "$dir"
     (
+        local entry strip=()                 # SWAY_AUTOTILE_* override the config file
+        while IFS= read -r -d '' entry; do
+            [[ $entry == SWAY_AUTOTILE_* ]] && strip+=(-u "${entry%%=*}")
+        done < <(env -0)
         start_sway "$dir" || { echo "FAIL $name: sway did not start"; exit 1; }
         trap stop_sway EXIT
+        export XDG_CONFIG_HOME="$dir/xdg"  # after start_sway: the windows sway starts keep the real one
+        if [[ -n ${CONFIG:-} ]]; then
+            mkdir -p "$XDG_CONFIG_HOME/sway-autotile"
+            printf '%s\n' "$CONFIG" >"$XDG_CONFIG_HOME/sway-autotile/config"
+        fi
         : >"$dir/events"
-        python3 -B "$TESTS/events.py" "$dir/events" &
+        env "${strip[@]}" python3 -B "$TESTS/events.py" "$dir/events" &
         local pid="" rc=0 failed=0
         : >"$dir/autotiler.err"
         if [[ $daemon == 1 ]]; then
-            python3 -B "$ROOT/sway-autotile" --debug 2>"$dir/autotiler.err" &
+            env "${strip[@]}" python3 -B "$ROOT/sway-autotile" --debug 2>"$dir/autotiler.err" &
             pid=$!
         fi
         sleep 1
-        AUTOTILE_EVENTS="$dir/events" AUTOTILE_DAEMON_PID="$pid" python3 -B "$@" >"$dir/out" 2>&1 || rc=$?
+        AUTOTILE_EVENTS="$dir/events" AUTOTILE_DAEMON_PID="$pid" AUTOTILE_SWAY_CONFIG="$dir/config" env "${strip[@]}" python3 -B "$@" >"$dir/out" 2>&1 || rc=$?
         grep -E '^FAIL ' "$dir/out"
         if [[ $rc != 0 ]]; then echo "FAIL $name: test script exited $rc"; tail -3 "$dir/out"; failed=1; fi
         if [[ -n $pid ]] && ! kill -0 "$pid" 2>/dev/null; then echo "FAIL $name: the autotiler died"; failed=1; fi
@@ -137,7 +156,14 @@ keys() {
 
 focus() {
     echo "== focus"
-    if command -v wtype >/dev/null; then case_ focus "$TESTS/focus.py"; else echo "SKIP focus: wtype not found"; fi
+    if command -v wtype >/dev/null; then
+        # The expected mode comes from here, not from the program's loader: a loader bug can't fool both.
+        CONFIG='' AUTOTILE_EXPECT_WORKSPACE_OPEN=end case_ focus "$TESTS/focus.py"
+        CONFIG='workspace_open = half' AUTOTILE_EXPECT_WORKSPACE_OPEN=half case_ focus-half "$TESTS/focus.py"
+        CONFIG='workspace_open = sway' AUTOTILE_EXPECT_WORKSPACE_OPEN=sway case_ focus-sway "$TESTS/focus.py"
+    else
+        echo "SKIP focus: wtype not found"
+    fi
 }
 
 cli() { echo "== cli"; DAEMON=0 case_ cli "$TESTS/cli.py"; }
@@ -145,7 +171,7 @@ cli() { echo "== cli"; DAEMON=0 case_ cli "$TESTS/cli.py"; }
 case ${1:-all} in
     all) scenarios; sequences; resize; keys; focus; cli ;;
     scenarios|sequences|resize|keys|focus|cli) "$1" ;;
-    *) sed -n '2,14p' "$0"; exit 2 ;;
+    *) sed -n '2,18p' "$0"; exit 2 ;;
 esac
 echo
 if [[ $FAILED == 0 ]]; then echo "ALL PASSED"; else echo "SOME TESTS FAILED"; fi

@@ -10,7 +10,10 @@ focus change before wrapping it again. Floating, fullscreen, tabbed and stacked 
 A key's `focus parent`/`focus child` that stops on a one-child wrapper goes on past it, since the
 wrapper looks like the window inside: each press moves the focus one level on screen, also when
 presses come faster than the daemon reads them. Sway can give focus back to a wrapper a key went past
-when you return to a workspace; the window inside gets focus then.
+when you return to a workspace; the window inside gets focus then. A window opened while a key's
+`focus parent` has the whole workspace selected goes to the workspace's end, every other con keeping
+its size, or takes half the workspace: Sway puts it after the child focused last, which can be in the
+middle (option workspace_open). A no_focus window leaves the workspace selected.
 The split direction rule comes from autotiling-rs (github.com/ammgws/autotiling-rs).
 
 Cleanup: a split wraps the window in a container with that one window inside. Once focus moves on,
@@ -27,17 +30,37 @@ One process does both, one event after another, so a cleanup can never remove a 
 a window focused in the meantime (which two separate daemons could). `split`, `layout` and
 `split none` on a target emit no window event and move no focus, so nothing loops.
 
-Usage: sway-autotile [--once] [--dry-run] [--debug]
-  --once      one pass over the current tree, then exit
-  --dry-run   print the commands instead of running them
-  --debug     log every command to stderr
+Usage: sway-autotile [--once] [--dry-run] [--debug] [--config PATH]
+       sway-autotile --check-config [--config PATH]
+  --once           one pass over the current tree, then exit
+  --dry-run        print the commands instead of running them
+  --debug          log every command to stderr
+  --config PATH    read options from PATH instead of the default file (--config=PATH for a path
+                   starting with -)
+  --check-config   print the options as the daemon would use them (`key = value`), with a warning
+                   for each problem; exit 1 if there was one. Needs no sway.
+A bad command line (unknown option, --config without a path, with an empty one or given twice) exits 2.
+
+Config file: $XDG_CONFIG_HOME/sway-autotile/config (default ~/.config/sway-autotile/config), optional.
+One `key = value` per line; blank lines and lines starting with # are ignored. Options:
+  workspace_open = end|half|sway   where a window opened while a focus key has the whole workspace
+                                   selected goes: the workspace's end (default), half the workspace
+                                   along its longer side, or where Sway puts it
+Each option can also be set as SWAY_AUTOTILE_<KEY> (e.g. SWAY_AUTOTILE_WORKSPACE_OPEN=sway), which
+wins over the file; an empty one counts as unset. Sway's `exec` passes sway's environment on, so a
+variable exported in a shell profile overrides the file. A problem in the file or a variable (an
+unknown key or variable, a bad value, a file that can't be read) prints a warning and is skipped:
+that option keeps the value it would have without it, and the program runs on.
 """
+import errno
 import json
 import os
 import re
+import select
 import socket
 import struct
 import sys
+import time
 from uuid import uuid4
 
 MAGIC = b"i3-ipc"
@@ -327,6 +350,84 @@ def plan_open(tree, old_id, new_id):
     return commands, True
 
 
+def plan_append(tree, ws_id, new_id, mode):
+    """A window opened while workspace `ws_id` itself was focused: Sway puts it right after the
+    workspace's child focused last, which can be in the middle. mode "end": move it to the end, where
+    Sway puts it when the last child was focused: outside what was selected, whichever window it came
+    from. mode "half": the window takes half the workspace along its longer side, after the rest.
+    mode "sway": leave it there. None if it isn't such an open: then it opened beside a tile, which
+    may need the open repair. A list, maybe empty, if it is: it never gets that repair."""
+    by_id, parent_of = tree_index(tree)
+    ws, new = by_id.get(ws_id), by_id.get(new_id)
+    if not ws or not new or parent_of.get(new_id) is not ws:
+        return None
+    if not (new["focused"] or ws["focused"]):
+        return None  # the focus went elsewhere meanwhile (a no_focus window): the selection is gone
+    if mode == "sway" or ws["layout"] not in SPLITS:
+        return []
+    cons = [n for n in by_id.values() if n["type"] == "con" and workspace_of(parent_of, n) is ws]
+    if any(n.get("fullscreen_mode") for n in cons + ws.get("floating_nodes", [])):
+        return []  # a directional move of a fullscreen con goes to the next output
+    ids = [c["id"] for c in ws["nodes"]]
+    if len(ids) == 1:
+        return []  # the workspace held only floating windows: nothing to go after
+    # Each child after the window swaps places with it, a view: every con keeps its own size, as if
+    # Sway had put the window at the end. Moving the window itself would change the others' sizes.
+    back = "left" if ws["layout"] == "splith" else "up"
+    commands = [f"[con_id={con_id}] move {back}" for con_id in ids[ids.index(new_id) + 1:]]
+    if mode == "half":
+        commands += plan_half(ws, new)
+    return commands
+
+
+AXIS = {"splith": "h", "tabbed": "h", "splitv": "v", "stacked": "v"}
+
+
+def squashable(node, parent_layout):
+    """Whether Sway's squash would dissolve `node` or a con below it: a one-child split con across its
+    split child, inside a parent that splits along the child's axis (Sway 1.12 container_squash). Sway
+    runs it over the whole workspace after every move that takes a con out of its parent."""
+    kids = node["nodes"]
+    if (len(kids) == 1 and node["layout"] in SPLITS and kids[0]["layout"] in SPLITS
+            and node["layout"] != kids[0]["layout"] and AXIS.get(parent_layout) == AXIS[kids[0]["layout"]]):
+        return True
+    return any(squashable(child, node["layout"]) for child in kids)
+
+
+def plan_half(ws, new):
+    """After plan_append's commands put `new` last: wrap the workspace's other children in one con that
+    keeps their layout and sizes, and put `new` after it, half each along the workspace's longer side.
+    The focus ends where it was: on `new`, or on the workspace for a no_focus window."""
+    want = split_layout(ws)
+    refocus = f"[con_id={new['id']}] focus" + ("" if new["focused"] else " parent")
+    if len(ws["nodes"]) == 2:
+        # One other child: only the direction can be wrong. `layout` on the window would wrap both in
+        # a new con, so it goes to the workspace itself.
+        return [f"[con_id={new['id']}] focus parent", f"layout {want}", refocus] if ws["layout"] != want else []
+    # The move below makes Sway squash the workspace, which would dissolve such a pair, marks and all,
+    # and spread its windows. The split keeps every con's parent layout, so this tree tells. Then the
+    # window only goes to the end.
+    if any(squashable(child, ws["layout"]) for child in ws["nodes"]):
+        return []
+    # A focused workspace's `split` wraps all its children, the window too, in a con with the
+    # workspace's old layout and sizes, and gives the workspace the layout `want`. The window is that
+    # con's last child, so a move along `want` takes it out right after the con, whatever its layout.
+    return [f"[con_id={new['id']}] focus parent", f"split {want[5]}",
+            f"[con_id={new['id']}] move {'right' if want == 'splith' else 'down'}", refocus]
+
+
+def plan_workspace_refocus(tree, ws_id, new_id):
+    """After half's move: with Sway's `workspace_layout tabbed|stacking`, a con moved to the workspace
+    level gets a group of its own, so a no_focus window's `focus parent` stopped on that group. Focus
+    the workspace again, through the group."""
+    by_id, parent_of = tree_index(tree)
+    node = focused_con(tree)
+    if (node and node["type"] == "con" and parent_of.get(node["id"]) is by_id.get(ws_id)
+            and [child["id"] for child in node["nodes"]] == [new_id]):
+        return [f"[con_id={node['id']}] focus parent"]
+    return []
+
+
 def run_pass(sock, tree, dry_run, debug, moved=False):
     """Returns (focused tile id or None, its wrapper's slot if the tile is left alone in one)."""
     commands = [f"[con_id={t['id']}] split none" for t in plan_unwrap(tree)]
@@ -379,15 +480,143 @@ def run_commands(sock, commands, dry_run, debug):
     return success
 
 
+def one_of(*values):
+    def parse(value):
+        if value not in values:
+            raise ValueError(f"expected {', '.join(values[:-1])} or {values[-1]}, got {value!r}")
+        return value
+    return parse
+
+
+OPTIONS = {"workspace_open": ("end", one_of("end", "half", "sway"))}  # config key -> (default, parser of its value)
+ENV_PREFIX = "SWAY_AUTOTILE_"  # + the key upper-cased: overrides the file
+
+
+READ_WAIT = 1.0  # seconds a config pipe may take to reach its end, e.g. --config <(…)
+
+
+def read_text(path):
+    """The file's text. A pipe or terminal is read without blocking for good: one that reaches no end
+    within READ_WAIT seconds, such as a FIFO with an idle writer or /dev/stdin on a terminal, fails."""
+    fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_CLOEXEC)  # opening a FIFO doesn't wait
+    try:
+        chunks, deadline = [], time.monotonic() + READ_WAIT
+        while True:
+            try:
+                chunk = os.read(fd, 65536)
+            except BlockingIOError:
+                left = deadline - time.monotonic()
+                if left <= 0 or not select.select([fd], [], [], left)[0]:
+                    raise OSError(errno.ETIMEDOUT, f"no end of input within {READ_WAIT:g} s (a pipe or terminal?)")
+                continue
+            if not chunk:
+                return b"".join(chunks).decode("utf-8")
+            chunks.append(chunk)
+    finally:
+        os.close(fd)
+
+
+def load_config(path, warnings):
+    """The options from `path`, or from the default file if `path` is None (a missing one is fine).
+    Each problem goes to `warnings` and is skipped: a bad line changes nothing, a file that can't be
+    read gives the defaults."""
+    config = {key: default for key, (default, _) in OPTIONS.items()}
+    implicit = path is None
+    if implicit:
+        base = os.environ.get("XDG_CONFIG_HOME") or os.path.join(os.path.expanduser("~"), ".config")
+        path = os.path.join(base, "sway-autotile", "config")
+    try:
+        lines = read_text(path).splitlines()
+    except FileNotFoundError as e:
+        if not implicit:  # only the default file may be missing; one below an unreadable dir warns
+            warnings.append(f"{path}: {e.strerror}")
+        return config
+    except (OSError, UnicodeDecodeError) as e:
+        warnings.append(f"{path}: {getattr(e, 'strerror', None) or e}")
+        return config
+    for number, line in enumerate(lines, 1):
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        key, sep, value = line.partition("=")
+        key, value = key.strip(), value.strip()
+        if not sep:
+            warnings.append(f"{path}:{number}: expected `key = value`, got {line!r}")
+        elif key not in OPTIONS:
+            warnings.append(f"{path}:{number}: unknown key {key!r}")
+        else:
+            try:
+                config[key] = OPTIONS[key][1](value)
+            except ValueError as e:
+                warnings.append(f"{path}:{number}: {key}: {e}")
+    return config
+
+
+def load_options(path, warnings=None):
+    """The config file's options, each overridden by its SWAY_AUTOTILE_<KEY> variable if that is set
+    and not empty. Problems go to the list `warnings` (if given) and are skipped: a bad variable
+    leaves the file's value or the default, an unknown one is ignored."""
+    warnings = [] if warnings is None else warnings
+    config = load_config(path, warnings)
+    for name, value in sorted(os.environ.items()):
+        if not name.startswith(ENV_PREFIX) or not value:
+            continue
+        key = name[len(ENV_PREFIX):].lower()
+        if key not in OPTIONS or name != ENV_PREFIX + key.upper():
+            warnings.append(f"unknown variable {name} (see --help)")
+            continue
+        try:
+            config[key] = OPTIONS[key][1](value)
+        except ValueError as e:
+            warnings.append(f"{name}: {e}")
+    return config
+
+
+def usage_error(message):
+    """A bad command line: exit 2, so --check-config's 1 only ever means warnings."""
+    print(f"sway-autotile: {message}", file=sys.stderr)
+    sys.exit(2)
+
+
 def main():
-    args = set(sys.argv[1:])
+    argv, args, config_path = sys.argv[1:], set(), None
+    while argv:
+        arg = argv.pop(0)
+        if arg == "--config" or arg.startswith("--config="):
+            if config_path is not None:
+                usage_error("--config given more than once (see --help)")
+            if arg != "--config":
+                config_path = arg[len("--config="):]
+            elif not argv:
+                usage_error("--config needs a path (see --help)")
+            elif argv[0].startswith("-"):
+                usage_error(f"--config needs a path, got {argv[0]!r} "
+                            "(use --config=PATH for a path starting with -)")
+            else:
+                config_path = argv.pop(0)
+        else:
+            args.add(arg)
+    if config_path == "":  # --config= or --config ''
+        usage_error("--config needs a path (see --help)")
     if {"-h", "--help"} & args:
         print("Usage: " + __doc__.split("Usage:")[1].strip())
         return
-    unknown = args - {"--once", "--dry-run", "--debug"}
+    unknown = args - {"--once", "--dry-run", "--debug", "--check-config"}
     if unknown:
-        sys.exit(f"sway-autotile: unknown option(s): {' '.join(sorted(unknown))} (see --help)")
+        usage_error(f"unknown option(s): {' '.join(sorted(unknown))} (see --help)")
+    if "--check-config" in args and len(args) > 1:
+        others = " ".join(sorted(args - {"--check-config"}))
+        usage_error(f"--check-config combines only with --config, got {others} (see --help)")
     dry_run, debug = "--dry-run" in args, "--debug" in args
+    warnings = []
+    options = load_options(config_path, warnings)
+    for warning in warnings:
+        print(f"sway-autotile: warning: {warning}", file=sys.stderr, flush=True)
+    if "--check-config" in args:
+        for key, value in options.items():
+            print(f"{key} = {value}")
+        sys.exit(1 if warnings else 0)
+    workspace_open = options["workspace_open"]
 
     sock = connect()
     if "--once" in args:
@@ -417,6 +646,7 @@ def main():
     # workspace id -> the hidden con a focus key went past there and Sway would give the focus back
     # to; dropped on the next window focus on that workspace or the next focus key press there.
     restores = {}
+    selected = None  # the workspace a focus key left the focus on; dropped on the next focus elsewhere
     prepare(tree)
     while True:
         kind, event = recv(events)
@@ -424,6 +654,8 @@ def main():
             # Handled before `unwrapped` is passed on: a key's move to another workspace or output
             # can put a workspace event between its move event and its binding event.
             ws = (event.get("current") or {}).get("id")
+            if event.get("change") == "focus":
+                selected = None  # Sway gives the focus to a con on the workspace, not to the workspace
             if event.get("change") == "focus" and ws in restores:
                 # Sway gives focus back to the con focused last there, which can be a wrapper a
                 # focus key went past. A window opened then would land beside the wrapper instead
@@ -455,6 +687,8 @@ def main():
                 restores.pop(ws, None)
                 if restore:
                     restores[ws] = restore
+                node = tree_index(tree)[0].get(base)
+                selected = base if node and node["type"] == "workspace" else None
                 run_commands(sock, commands, dry_run, debug)
             elif moved and not pending:
                 # A key ran `move <dir>` and only took the tile out of its wrapper: move it as the
@@ -489,11 +723,20 @@ def main():
         if kind == EVENT_WINDOW and event.get("change") == "focus":
             base = event["container"]["id"]  # focus on a con that is no window sends no event
             exact = True
+            selected = None
         if kind != EVENT_WINDOW or event.get("change") not in TRIGGERS:
             continue
         change, node_id = event["change"], event["container"]["id"]
         if change == "new":
-            if previous:
+            placed = plan_append(request(sock, GET_TREE), selected, node_id, workspace_open) if selected else None
+            if placed is not None:
+                # Its focus event, read next, prepares it; the tree read then already shows it moved.
+                # "half" ends on the window's own focus command: the same focus event, one more. A
+                # no_focus window sends none, and the focus ends on the workspace: it stays selected.
+                if run_commands(sock, placed, dry_run, debug) and workspace_open == "half":
+                    run_commands(sock, plan_workspace_refocus(request(sock, GET_TREE), selected, node_id),
+                                 dry_run, debug)
+            elif previous:
                 tree = request(sock, GET_TREE)
                 commands, follow_up = plan_open(tree, previous, node_id)
                 if commands:

@@ -15,8 +15,9 @@ tests/scenarios.py      # invariants in normal use, no event loops, tab groups i
 tests/sequences.py      # 9 seeded open/focus/close sequences (SEEDS table), placement checked every step
 tests/resize.py         # windows whose longer side already matches their parent's layout
 tests/keys.py           # one press of a `move` key binding moves the window (wtype presses the keys)
-tests/focus.py          # one press of a `focus parent`/`focus child` key changes the focus on screen
-tests/cli.py            # every documented way to run it: --help, --once, --dry-run, plain daemon, errors
+tests/focus.py          # one press of a `focus parent`/`focus child` key changes the focus on screen; run
+                       # three times, workspace_open unset (end), = half, = sway (F12-F23 check each)
+tests/cli.py            # every documented way to run it: --help, --once, --dry-run, --config, daemon, errors
 tests/lib.py, events.py # helpers and the placement checks; event logger (counts focus events)
 ```
 
@@ -25,8 +26,9 @@ tests/lib.py, events.py # helpers and the placement checks; event logger (counts
 ```bash
 ./sway-autotile --once --dry-run   # safe in a live session: prints what it would do, changes nothing
 ./sway-autotile --debug            # logs every command to stderr — run it in a test sway, not a live session
-tests/run                          # all tests, ~5 min; or: scenarios | sequences | resize | keys | focus | cli
+tests/run                          # all tests, ~9 min; or: scenarios | sequences | resize | keys | focus | cli
 SEEDS="1 2" tests/run sequences    # a subset
+CONFIG='workspace_open = half' tests/run scenarios   # the program reads this config file (focus sets its own)
 ```
 
 ## Testing
@@ -36,6 +38,14 @@ SEEDS="1 2" tests/run sequences    # a subset
   case starts its own headless, software-rendered sway (`WLR_BACKENDS=headless`,
   `WLR_RENDERER=pixman`) with a fixed 2560x1440 output and config, detached from the session it runs in.
   Never point the program or the tests at a live session — windows would move under the user.
+- `case_` removes every `SWAY_AUTOTILE_*` name from the environment of the python processes it starts
+  (`env -u`, names from `env -0`: `compgen -v` misses names that aren't shell identifiers) and sets
+  `XDG_CONFIG_HOME` to the case's own dir (after sway starts, so windows keep the real one), so the
+  program never reads the user's settings; config problems only warn, so `tests/cli.py` section 15
+  checks that none got through;
+  `CONFIG='key = value'` (lines separated by newlines) writes the config file there. Options live in
+  `OPTIONS` (key → default, value parser); each gets its `SWAY_AUTOTILE_<KEY>` variable from there.
+  The tests' own variables use the `AUTOTILE_` prefix: keep them out of `SWAY_AUTOTILE_`.
 - Every change to `sway-autotile` must pass `tests/run` (all). The placement rule is checked directly
   (`lib.check_open`): after an open, the new window and the window focused before fill that window's old
   rectangle, half each along its longer side, and no other window moves; a focus moves nothing; a close
@@ -56,7 +66,9 @@ SEEDS="1 2" tests/run sequences    # a subset
   container. `tests/run resize` covers the windows this matters for.
 - One process, one pass per event, all commands of a pass in one RUN_COMMAND: a separate autotiler +
   cleaner raced (a cleanup could remove a wrapper made for a window focused in the meantime). The one
-  exception is the open repair below: its follow-up pass runs on the daemon's own tagged tick.
+  exception is the open repair below: its follow-up pass runs on the daemon's own tagged tick. Within
+  one event a command can be followed by a fresh tree read and more commands (a key move's repeat, the
+  half refocus under `workspace_layout tabbed`).
 - The daemon prepares the focused split at startup and after focus/close/floating events. Sway can
   send a focus event before a close changes the next window's shape (seeds 1, 4, 5).
 - Cleanup also runs on move. Never split on a `move` event: sway's directional move of a wrapped
@@ -107,4 +119,40 @@ SEEDS="1 2" tests/run sequences    # a subset
   that Sway itself takes to the workspace still record the wrapper (F11). Workspace events are handled
   before a move event's result is passed on, so one can't drop a key move's rewrap (on sway 1.12 none
   came between them in tests).
+- A window opened while the workspace itself is focused goes, in Sway, right after the workspace's child
+  focused last (the seat's focus stack), so `focus parent` from the left of two halves opens it between
+  them. When a focus key left the focus on the workspace (dropped by the next window or workspace focus
+  event), the daemon puts the new window at the workspace's end on its `new` event: each child after it,
+  in order, gets `[con_id=X] move left|up` and swaps places with it, a view, so every con keeps its size
+  and the result equals Sway's own with the last child focused (F14, F15; `up` on a splitv one, F17).
+  Moving the new window there (`move container to mark`, then out of a container) changes the others'
+  sizes. A focused container below the workspace needs nothing: Sway already opens the window after it
+  (F12, F13). `swaymsg focus parent` sends no event and keeps Sway's placement. `workspace_open = half`
+  first puts the window last the same way, then `[con_id=new] focus parent; split h|v` (a focused
+  workspace's `split` wraps all its children in a con with the old layout and sizes and gives the
+  workspace the new one) and one `move right|down` along the new layout, which takes the window, that
+  con's last child, out right after it whatever its layout. No layout flip: turning that con across for
+  the move and back squashed a marked container among the children (F16). With one other child only the
+  workspace's own layout is set (`focus parent; layout`): `[con_id=new] layout` would wrap both in a new
+  con (F20). Half ends on `[con_id=new] focus`, or `focus parent` for a no_focus window, so the workspace
+  stays selected (F19). With `workspace_layout tabbed|stacking` Sway puts a con moved to the workspace
+  level into a group of its own, so that `focus parent` stops on the group: a fresh tree read after the
+  batch then sends `[con_id=group] focus parent` (F23). After every move that takes a con out of its
+  parent Sway squashes the whole workspace (1.12 `workspace_squash`): a one-child split con across its
+  split child, inside a parent split along the child's axis, is dissolved, marks and all, and its windows
+  spread into the parent. The reorder's swaps never squash, half's move does: on a workspace holding such
+  a pair half only puts the window at the end (`squashable`, F21). Both modes do nothing when the `new`
+  tree read shows neither the window nor the workspace focused (the selection is stale), when the
+  workspace has no other tiled child (only floating ones, F18), or when a con there is fullscreen (its
+  directional move would go to the next output). A window opened on the selected workspace never gets the
+  open repair, in any mode (sway too keeps `selected`): a `swaymsg move` can leave the tile unwrapped, and
+  the repair then put the window in a split with it (F22). Known limits: `swaymsg focus child` onto a
+  group sends no event, so a window opened then still counts as opened on the workspace; a window that
+  maps before the daemon reads the key's binding event isn't seen as opened there (that tree read already
+  shows it focused); a window that closes between the daemon's tree read and its commands (a window of
+  microseconds) turns the reorder's moves on the con before it: past it if that is a window (the order
+  changes), into it if it is a container (the structure changes, and Sway squashes the workspace), and
+  Sway runs the rest of a batch after a failed `[con_id=new]` command, so half's unscoped `split`/`layout`
+  act on whatever has the focus then. No sway 1.12 command moves a con past the window by naming both and
+  keeps every size (`move container to mark` resets the moved con's).
 - No dependencies beyond the Python standard library (no i3ipc): keep it that way.
