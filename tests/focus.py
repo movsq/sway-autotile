@@ -33,6 +33,9 @@ workspace 9, workspace 9`; wtype presses them.
   F18 a workspace with only a floating window: focus parent from it, then a tiled window opens normally
   F19 two no_focus windows (`no_focus [title="^nf"]` in the sway config): the workspace stays selected
   F20 a splitv workspace around one splith container: the new window gets no extra container level
+  F21 a marked one-child splitv around a splith group first, the window from which the workspace is
+      selected last: mark, group and order survive, and the new window opens last in every mode (half
+      needs a move after which Sway would dissolve that pair, so it only puts the window at the end)
   `tests/run focus` runs this file once per workspace_open value and names it in
   AUTOTILE_EXPECT_WORKSPACE_OPEN. With end, F14-F17, F19 and F20 check that the new window is last and
   (F14, F15, F17, F19) that every window's rect equals Sway's own end placement, built on another workspace
@@ -461,5 +464,28 @@ result(kids == [group, top_of(t, "v3")[0]["id"]] and ws["layout"] == layout,
        f"F20 the workspace ({ws['layout']}, expected {layout}) holds the container and v3, no level between: {kids}")
 if MODE == "half":
     check_half(t, ["v1", "v2"], "v3", "F20", before)
+
+print("== F21 a marked one-child splitv around a splith group first: Sway's squash would dissolve both")
+cmd("workspace 27")
+for w in ("sq1", "sq2", "sq3"):
+    spawn(w)                                     # splith[sq1, splitv[sq2, splith[sq3]]]
+group = top_of(tree(), "sq2")[0]["id"]
+cmd(f"[con_id={group}] move left")               # splith[splitv[sq2, sq3], sq1]
+cmd(f"[con_id={wid('sq2')}] layout splith")      # the group across its parent's way: splith[sq2, sq3]
+cmd(f"[con_id={group}] split v")
+marked = parents(tree())[group]["id"]
+cmd(f"[con_id={marked}] mark sq")                # splith[splitv sq[splith[sq2, sq3]], sq1]
+[(before, after)] = select_and_open(27, "sq1", ["sq4"], "F21")
+t = check("F21 open sq4")
+m = next((n for n, _ in nodes(t) if n["id"] == marked), {"marks": None, "nodes": []})
+kids = [[c["name"] for c in n["nodes"]] for n in m["nodes"]]
+result(m["marks"] == ["sq"] and [n["id"] for n in m["nodes"]] == [group] and kids == [["sq2", "sq3"]],
+       f"F21 the marked con {marked} {m['marks']} still holds the group {[n['id'] for n in m['nodes']]} with {kids}")
+# sq1 is last, so every mode leaves sq4 after it. half would need the move that squashes: it only goes
+# to the end, sizes as Sway gives them.
+slots = [slot_of(t, w) for w in ("sq2", "sq1", "sq4")]
+widths = [top_of(t, w)[0]["rect"]["width"] for w in ("sq2", "sq1", "sq4")]
+result(slots == [0, 1, 2] and max(widths) - min(widths) <= 1,
+       f"F21 sq4 opens last, in thirds like Sway's end placement: slots {slots}, widths {widths}")
 
 finish()

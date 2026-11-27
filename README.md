@@ -142,6 +142,10 @@ workspace_open = half
 | --- | --- | --- |
 | `workspace_open` | `end` (default), `half`, `sway` | where a window opens after a `focus parent` key has selected the whole workspace. `end`: after all the windows there. `half`: in half the workspace along its longer side, and the other windows share the other half in their old layout and proportions. `sway`: right after the window focused last, as in plain sway |
 
+On a workspace that holds a container whose only child is a container split the other way, such as a
+marked one, `half` places the window as `end` does. The move that makes room for the half would make
+sway dissolve that container, with any mark on it.
+
 Each key can also be set as a variable, `SWAY_AUTOTILE_` plus the key in upper case. A variable wins over
 the file, and an empty one counts as unset:
 

@@ -373,6 +373,20 @@ def plan_append(tree, ws_id, new_id, mode):
     return commands
 
 
+AXIS = {"splith": "h", "tabbed": "h", "splitv": "v", "stacked": "v"}
+
+
+def squashable(node, parent_layout):
+    """Whether Sway's squash would dissolve `node` or a con below it: a one-child split con across its
+    split child, inside a parent that splits along the child's axis (Sway 1.12 container_squash). Sway
+    runs it over the whole workspace after every move that takes a con out of its parent."""
+    kids = node["nodes"]
+    if (len(kids) == 1 and node["layout"] in SPLITS and kids[0]["layout"] in SPLITS
+            and node["layout"] != kids[0]["layout"] and AXIS.get(parent_layout) == AXIS[kids[0]["layout"]]):
+        return True
+    return any(squashable(child, node["layout"]) for child in kids)
+
+
 def plan_half(ws, new):
     """After plan_append's commands put `new` last: wrap the workspace's other children in one con that
     keeps their layout and sizes, and put `new` after it, half each along the workspace's longer side.
@@ -383,6 +397,11 @@ def plan_half(ws, new):
         # One other child: only the direction can be wrong. `layout` on the window would wrap both in
         # a new con, so it goes to the workspace itself.
         return [f"[con_id={new['id']}] focus parent", f"layout {want}", refocus] if ws["layout"] != want else []
+    # The move below makes Sway squash the workspace, which would dissolve such a pair, marks and all,
+    # and spread its windows. The split keeps every con's parent layout, so this tree tells. Then the
+    # window only goes to the end.
+    if any(squashable(child, ws["layout"]) for child in ws["nodes"]):
+        return []
     # A focused workspace's `split` wraps all its children, the window too, in a con with the
     # workspace's old layout and sizes, and gives the workspace the layout `want`. The window is that
     # con's last child, so a move along `want` takes it out right after the con, whatever its layout.
