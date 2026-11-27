@@ -7,7 +7,7 @@
 # tests/run before building.
 
 pkgname=sway-autotile
-pkgver=0.2.0
+pkgver=0.2.1
 pkgrel=1
 pkgdesc='Autotiling for sway that removes the one-window containers its splits leave behind'
 arch=('any')
