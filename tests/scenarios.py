@@ -170,4 +170,17 @@ for title in ("f3", "f4"):
     check_open(before, after, title, "14")
     result(focused_window(after)["id"] == wid("f1"), f"14 opening {title} keeps focus on f1")
 
+print("== 15 fullscreen across workspace switch")
+cmd("workspace 8")
+spawn("fs1")
+spawn("fs2")
+cmd(f"[con_id={wid('fs1')}] focus")
+cmd("fullscreen enable")
+cmd("workspace 2")
+cmd("workspace 8")
+cmd("fullscreen disable")
+before = check("15 after exiting fullscreen")
+spawn("fs3")
+check_open(before, check("15 open after fullscreen"), "fs3", "15")
+
 finish()

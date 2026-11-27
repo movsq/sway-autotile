@@ -2,7 +2,7 @@
 """sway-autotile — autotiling for sway that cleans up after itself.
 
 Autotiling: prepare the focused tile for a split along its longer side at startup and after a
-focus, close or floating change. Recheck the direction when a window opens, since Sway can resize
+focus, close, floating or fullscreen change. Recheck the direction when a window opens, since Sway can resize
 the focused tile without a window event. A directional move of a wrapped tile only takes it out of
 its wrapper. When a key binding ran that move, it is sent again and the tile wrapped again, so one
 press moves the tile. After a move without a binding (swaymsg, scripts), wait for the next open or
@@ -19,8 +19,8 @@ The split direction rule comes from autotiling-rs (github.com/ammgws/autotiling-
 Cleanup: a split wraps the window in a container with that one window inside. Once focus moves on,
 nothing opens there and the wrapper stays — an invisible extra level that makes moving windows,
 `layout tabbed` and resizing act on the wrapper instead of what you see. Closing windows leaves the
-same kind of one-child containers, sometimes in chains. After every focus/close/move/floating change
-every run of one-child split containers is removed with `split none`, except:
+same kind of one-child containers, sometimes in chains. After every focus/close/move/floating/fullscreen
+change every run of one-child split containers is removed with `split none`, except:
   - the focused window's own wrapper (it decides where the next window goes) — chains above it go;
   - runs containing a tabbed/stacked, focused or marked container.
 `split none` flattens *every* one-child ancestor above its target, not one level, so it is only
@@ -67,7 +67,7 @@ MAGIC = b"i3-ipc"
 HEADER = struct.Struct("=6sII")
 RUN_COMMAND, SUBSCRIBE, GET_TREE, SEND_TICK = 0, 2, 4, 10
 EVENT_WORKSPACE, EVENT_WINDOW, EVENT_BINDING, EVENT_TICK = 0x80000000, 0x80000003, 0x80000005, 0x80000007
-TRIGGERS = {"focus", "close", "move", "floating", "new"}
+TRIGGERS = {"focus", "close", "move", "floating", "fullscreen_mode", "new"}
 SPLITS = ("splith", "splitv")
 DIRECTIONAL_MOVE = re.compile(r"move\s+(left|right|up|down)(\s+\d+(\s*px)?)?", re.IGNORECASE)
 FOCUS_LEVEL = re.compile(r"focus\s+(parent|child)", re.IGNORECASE)

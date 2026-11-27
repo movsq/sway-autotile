@@ -69,8 +69,8 @@ CONFIG='workspace_open = half' tests/run scenarios   # the program reads this co
   exception is the open repair below: its follow-up pass runs on the daemon's own tagged tick. Within
   one event a command can be followed by a fresh tree read and more commands (a key move's repeat, the
   half refocus under `workspace_layout tabbed`).
-- The daemon prepares the focused split at startup and after focus/close/floating events. Sway can
-  send a focus event before a close changes the next window's shape (seeds 1, 4, 5).
+- The daemon prepares the focused split at startup and after focus/close/floating/fullscreen events.
+  Sway can send a focus event before a close changes the next window's shape (seeds 1, 4, 5).
 - Cleanup also runs on move. Never split on a `move` event: sway's directional move of a wrapped
   tile only takes it out of its wrapper, into the wrapper's slot (and resets the siblings' sizes, so
   the tile's rect can change). Rewrapping on every move would keep it in place for good. A key
