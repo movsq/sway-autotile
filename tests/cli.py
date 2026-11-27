@@ -19,7 +19,8 @@ so each section runs the program itself.
                                defaults, silent
  12 SWAY_AUTOTILE_<KEY>        overrides the file and the default; empty counts as unset; a bad value
                                or an unknown SWAY_AUTOTILE_* variable: a warning naming it, skipped
- 13 --config argument errors   no path, a path starting with -, given twice: error, exit 2, no IPC
+ 13 --config argument errors   no path, an empty one, a path starting with -, given twice: error, exit 2,
+                               no IPC
                                (also `--config --dry-run --once --config=/dev/null`); --config=-PATH works
  14 --check-config             the effective options on stdout, warnings on stderr, exit 1 if any;
                                with --config; any other option: usage error (exit 2); never connects to sway
@@ -388,6 +389,9 @@ dash = "(use --config=PATH for a path starting with -)"
 for args, message in (
         (("--config",), no_path),
         (("--once", "--config"), no_path),
+        (("--config=", "--once"), no_path),
+        (("--config", "", "--once"), no_path),
+        (("--check-config", "--config="), no_path),
         (("--config", "--dry-run", "--once", "--config=/dev/null"), f"--config needs a path, got '--dry-run' {dash}"),
         (("--config", "-x", "--once"), f"--config needs a path, got '-x' {dash}"),
         (("--config", "/dev/null", "--config", "/dev/null", "--once"), twice),

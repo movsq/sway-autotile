@@ -39,7 +39,7 @@ Usage: sway-autotile [--once] [--dry-run] [--debug] [--config PATH]
                    starting with -)
   --check-config   print the options as the daemon would use them (`key = value`), with a warning
                    for each problem; exit 1 if there was one. Needs no sway.
-A bad command line (unknown option, --config without a path or given twice) exits 2.
+A bad command line (unknown option, --config without a path, with an empty one or given twice) exits 2.
 
 Config file: $XDG_CONFIG_HOME/sway-autotile/config (default ~/.config/sway-autotile/config), optional.
 One `key = value` per line; blank lines and lines starting with # are ignored. Options:
@@ -596,6 +596,8 @@ def main():
                 config_path = argv.pop(0)
         else:
             args.add(arg)
+    if config_path == "":  # --config= or --config ''
+        usage_error("--config needs a path (see --help)")
     if {"-h", "--help"} & args:
         print("Usage: " + __doc__.split("Usage:")[1].strip())
         return

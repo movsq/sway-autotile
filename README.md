@@ -125,7 +125,7 @@ Without options it runs as a daemon, started from the sway config as above. It e
 `--once --dry-run` only reads the tree, so it's safe to run in your session to see what the daemon would do.
 It needs `SWAYSOCK`, which sway sets for everything it starts, including your terminal inside sway.
 `--check-config` doesn't connect to sway and combines only with `--config`. A bad command line, such as an
-unknown option or `--config` without a path or given twice, exits with status 2.
+unknown option or `--config` without a path, with an empty one or given twice, exits with status 2.
 
 ### Config file
 
