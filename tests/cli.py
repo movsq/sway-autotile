@@ -3,7 +3,7 @@ so each section runs the program itself.
 
   1 -h / --help                usage, exit 0
   2 unknown option             error, exit 2, no IPC
-  3 SWAYSOCK not set           error, exit != 0
+  3 SWAYSOCK errors          unset, nonexistent or dead SWAYSOCK: error, exit != 0, no traceback
   4 --once --dry-run           prints the exact commands of one pass, changes nothing
   5 --once                     runs them, then exits
   6 daemon --dry-run           prints a pass per event, changes nothing
@@ -27,6 +27,7 @@ so each section runs the program itself.
  15 isolation                  tests/run removes every SWAY_AUTOTILE_* name from this environment
 """
 import os
+import socket
 import subprocess
 import sys
 import tempfile
@@ -62,11 +63,25 @@ p = run("--bogus")
 result(p.returncode == 2 and "unknown option(s): --bogus" in p.stderr and not p.stdout,
        f"2 --bogus: error, exit {p.returncode}: {p.stderr.strip()!r}")
 
-print("== 3 SWAYSOCK not set")
+print("== 3 SWAYSOCK errors")
 env = {k: v for k, v in os.environ.items() if k not in ("SWAYSOCK", "I3SOCK")}
 p = run("--once", "--dry-run", env=env)
 result(p.returncode != 0 and "SWAYSOCK is not set" in p.stderr,
        f"3 no SWAYSOCK: error, exit {p.returncode}: {p.stderr.strip()!r}")
+with tempfile.TemporaryDirectory() as sock_dir:
+    missing_sock = os.path.join(sock_dir, "missing.sock")
+    p = run("--once", "--dry-run", env={**env, "SWAYSOCK": missing_sock})
+    result(p.returncode != 0 and f"sway-autotile: {missing_sock}: No such file or directory" in p.stderr
+           and "Traceback" not in p.stderr,
+           f"3 nonexistent SWAYSOCK: error, exit {p.returncode}: {p.stderr.strip()!r}")
+    dead_sock = os.path.join(sock_dir, "dead.sock")
+    srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    srv.bind(dead_sock)
+    srv.close()
+    p = run("--once", "--dry-run", env={**env, "SWAYSOCK": dead_sock})
+    result(p.returncode != 0 and f"sway-autotile: {dead_sock}: Connection refused" in p.stderr
+           and "Traceback" not in p.stderr,
+           f"3 dead SWAYSOCK: error, exit {p.returncode}: {p.stderr.strip()!r}")
 
 # A leftover wrapper around a, and b focused with a sibling: one pass should unwrap a and split b.
 spawn("a")
