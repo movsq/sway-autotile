@@ -36,6 +36,9 @@ workspace 9, workspace 9`; wtype presses them.
   F21 a marked one-child splitv around a splith group first, the window from which the workspace is
       selected last: mark, group and order survive, and the new window opens last in every mode (half
       needs a move after which Sway would dissolve that pair, so it only puts the window at the end)
+  F22 swaymsg move takes the window out of its wrapper, then focus parent selects the workspace: the new
+      window opens on the workspace (end, sway: after that window; half: the right half), not in a split
+      with the window
   `tests/run focus` runs this file once per workspace_open value and names it in
   AUTOTILE_EXPECT_WORKSPACE_OPEN. With end, F14-F17, F19 and F20 check that the new window is last and
   (F14, F15, F17, F19) that every window's rect equals Sway's own end placement, built on another workspace
@@ -487,5 +490,23 @@ slots = [slot_of(t, w) for w in ("sq2", "sq1", "sq4")]
 widths = [top_of(t, w)[0]["rect"]["width"] for w in ("sq2", "sq1", "sq4")]
 result(slots == [0, 1, 2] and max(widths) - min(widths) <= 1,
        f"F21 sq4 opens last, in thirds like Sway's end placement: slots {slots}, widths {widths}")
+
+print("== F22 swaymsg move takes the window out of its wrapper, then focus parent: no open repair")
+cmd("workspace 28")
+spawn("un1")
+spawn("un2")                                     # splith[un1, splitv[un2]]
+cmd("move left")                                 # no binding event, nothing wraps it again: splith[un1, un2]
+press("a")
+workspace_focused(tree(), "28", "F22 focus parent")
+before = tree()
+spawn("un3")
+t = check("F22 open un3")
+if MODE == "half":
+    check_half(t, ["un1", "un2"], "un3", "F22", before)
+else:                                            # end and sway alike: Sway puts un3 last, after un2
+    ws = top_of(t, "un3")[1]
+    top = [c["name"] if not c["nodes"] else [g["name"] for g in c["nodes"]] for c in ws["nodes"]]
+    result(top[:2] == ["un1", "un2"] and slot_of(t, "un3") == 2 and len(top) == 3,
+           f"F22 un3 opens on the workspace after un2, not in a split with it: {top}")
 
 finish()

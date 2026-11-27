@@ -16,7 +16,7 @@ tests/sequences.py      # 9 seeded open/focus/close sequences (SEEDS table), pla
 tests/resize.py         # windows whose longer side already matches their parent's layout
 tests/keys.py           # one press of a `move` key binding moves the window (wtype presses the keys)
 tests/focus.py          # one press of a `focus parent`/`focus child` key changes the focus on screen; run
-                       # three times, workspace_open unset (end), = half, = sway (F12-F21 check each)
+                       # three times, workspace_open unset (end), = half, = sway (F12-F22 check each)
 tests/cli.py            # every documented way to run it: --help, --once, --dry-run, --config, daemon, errors
 tests/lib.py, events.py # helpers and the placement checks; event logger (counts focus events)
 ```
@@ -140,9 +140,11 @@ CONFIG='workspace_open = half' tests/run scenarios   # the program reads this co
   window at the end (`squashable`, F21). Both modes do nothing when the `new` tree read shows neither the
   window nor the workspace focused (the selection is stale), when the workspace has no other tiled child
   (only floating ones, F18), or when a con there is fullscreen (its directional move would go to the next
-  output). Known limits: `swaymsg focus child` onto a group sends no event, so a window opened then still
-  counts as opened on the workspace; a window that maps before the daemon reads the key's binding event
-  isn't seen as opened there (that tree read already shows it focused); a window that closes between the
-  daemon's tree read and its commands can make half's unscoped `split`/`layout` act on whatever has the
-  focus then, or the reorder's moves swap the wrong cons.
+  output). A window opened on the selected workspace never gets the open repair, in any mode (sway too
+  keeps `selected`): a `swaymsg move` can leave the tile unwrapped, and the repair then put the window in
+  a split with it (F22). Known limits: `swaymsg focus child` onto a group sends no event, so a window
+  opened then still counts as opened on the workspace; a window that maps before the daemon reads the
+  key's binding event isn't seen as opened there (that tree read already shows it focused); a window that
+  closes between the daemon's tree read and its commands can make half's unscoped `split`/`layout` act on
+  whatever has the focus then, or the reorder's moves swap the wrong cons.
 - No dependencies beyond the Python standard library (no i3ipc): keep it that way.
