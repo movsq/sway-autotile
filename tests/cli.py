@@ -13,7 +13,8 @@ so each section runs the program itself.
  10 config file warnings       missing file, directory, bad UTF-8, unreadable, unknown key, bad value,
                                line without `=`: a warning naming the file and line, the line or file
                                skipped, exit 0 (--once, --dry-run, daemon); a FIFO whose writer stays
-                               idle: a warning after 1 s, no hang; --config <(…) is read in full
+                               idle: a warning after 1 s, no hang; --config <(…) is read in full;
+                               /dev/zero: a size warning, no hang or OOM
  11 default config file        found in $XDG_CONFIG_HOME, else ~/.config; one that can't be read, also
                                below a directory that can't be searched: a warning; no file at all:
                                defaults, silent
@@ -268,6 +269,13 @@ p = subprocess.run(["bash", "-c", f'exec "$0" -B "$1" --check-config --config <(
                    env={**no_sock, "XDG_CONFIG_HOME": no_default})
 result(p.returncode == 0 and not p.stderr and p.stdout == "workspace_open = half\n",
        f"10 --config <(sleep 0.3; echo …): reads the pipe (rc {p.returncode}, out {p.stdout!r}, err {p.stderr.strip()!r})")
+for label, args in (("--check-config", ("--check-config",)), ("--once --dry-run", ("--once", "--dry-run"))):
+    start = time.monotonic()
+    p = run(*args, "--config", "/dev/zero", env={**os.environ, "XDG_CONFIG_HOME": no_default})
+    took = time.monotonic() - start
+    result(p.returncode == (1 if args[0] == "--check-config" else 0) and took < 5
+           and p.stderr == warned("/dev/zero: file exceeds 1048576 bytes"),
+           f"10 /dev/zero, {label}: warns after {took:.1f} s, exit {p.returncode} (err {p.stderr.strip()!r})")
 bad = config_file("bad-daemon", "workspace_open = on\n")
 warning = warned(f"{bad}:1: workspace_open: {BAD} 'on'")
 p = run("--once", "--config", bad)

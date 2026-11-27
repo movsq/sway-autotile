@@ -516,24 +516,33 @@ ENV_PREFIX = "SWAY_AUTOTILE_"  # + the key upper-cased: overrides the file
 
 
 READ_WAIT = 1.0  # seconds a config pipe may take to reach its end, e.g. --config <(…)
+READ_LIMIT = 1 << 20  # 1 MiB: guard against endless streams like /dev/zero or <(yes)
 
 
 def read_text(path):
     """The file's text. A pipe or terminal is read without blocking for good: one that reaches no end
-    within READ_WAIT seconds, such as a FIFO with an idle writer or /dev/stdin on a terminal, fails."""
+    within READ_WAIT seconds, such as a FIFO with an idle writer or /dev/stdin on a terminal, or
+    exceeds READ_LIMIT bytes, such as /dev/zero, fails."""
     fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_CLOEXEC)  # opening a FIFO doesn't wait
     try:
-        chunks, deadline = [], time.monotonic() + READ_WAIT
+        poller = select.poll()
+        poller.register(fd, select.POLLIN)
+        chunks, total, deadline = [], 0, time.monotonic() + READ_WAIT
         while True:
             try:
                 chunk = os.read(fd, 65536)
             except BlockingIOError:
                 left = deadline - time.monotonic()
-                if left <= 0 or not select.select([fd], [], [], left)[0]:
+                if left <= 0 or not poller.poll(left * 1000):
                     raise OSError(errno.ETIMEDOUT, f"no end of input within {READ_WAIT:g} s (a pipe or terminal?)")
                 continue
             if not chunk:
                 return b"".join(chunks).decode("utf-8")
+            total += len(chunk)
+            if total > READ_LIMIT:
+                raise OSError(errno.EFBIG, f"file exceeds {READ_LIMIT} bytes")
+            if time.monotonic() >= deadline:
+                raise OSError(errno.ETIMEDOUT, f"no end of input within {READ_WAIT:g} s (a pipe or terminal?)")
             chunks.append(chunk)
     finally:
         os.close(fd)
