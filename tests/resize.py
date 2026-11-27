@@ -6,8 +6,9 @@ let the next window join the parent (an equal share of it). Here it must halve t
   V  a tall window in a splitv parent, after its wrapper was cleaned up (workspace 3)
   F  a focused window resized from tall to wide before opening another (workspace 4)
   M  a focused window moved and resized before opening another (workspace 5)
+  W  a lone window on a workspace turned across its longer side without a window event (workspace 6)
 """
-from lib import check, check_open, cmd, finish, show, spawn, tree, wid
+from lib import by_title, check, check_open, cmd, finish, parents, result, show, spawn, tree, wid
 
 # H: a was wrapped once, focus left it, cleanup removed the wrapper, then it was made wide
 spawn("a")
@@ -69,5 +70,23 @@ check_open(before, check("M"), "c4", "M")
 before = tree()
 spawn("d4")
 check_open(before, check("M next open"), "d4", "M next open")
+
+# W: a lone window on a workspace whose layout was turned across without a window event
+cmd("workspace 6")
+spawn("w1")
+cmd("split v")
+before = tree()
+ws_before = parents(before)[by_title(before, "w1")["id"]]
+result(ws_before["type"] == "workspace" and ws_before["layout"] == "splitv",
+       f"W setup: w1 alone on splitv workspace ({ws_before['type']} {ws_before['layout']})")
+spawn("w2")
+after = check("W")
+check_open(before, after, "w2", "W")
+par = parents(after)
+w1_parent = par[by_title(after, "w1")["id"]]
+w2_top = par[by_title(after, "w2")["id"]]
+result(w1_parent["type"] == "workspace" and w1_parent["layout"] == "splith"
+       and par[w2_top["id"]]["id"] == w1_parent["id"] and len(w1_parent["nodes"]) == 2,
+       f"W no extra container around [w1, w2] ({w1_parent['type']} {w1_parent['layout']}, {len(w1_parent['nodes'])} children)")
 
 finish()

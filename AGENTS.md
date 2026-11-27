@@ -59,18 +59,21 @@ CONFIG='workspace_open = half' tests/run scenarios   # the program reads this co
 ## Design constraints (each one was found by a failing test)
 
 - `split none` flattens *every* one-child ancestor of its target, not one level → only send it when the
-  whole run is splith/splitv; tabbed/stacked, focused or marked containers end a run.
+  whole run is splith/splitv; tabbed/stacked, focused, fullscreen or marked containers end a run. Only
+  a focused window (leaf) keeps its own wrapper; a one-child split wrapper above a focused container
+  or a marked/fullscreen wrapper is still removed.
 - A focused window with siblings is split even when its parent already has the wanted layout
   (autotiling-rs skips that split, and the next window then gets an equal share of the parent instead of
   half). Only a window alone in its container needs no split, at most a `layout` change of that
-  container. `tests/run resize` covers the windows this matters for.
+  container. Focused containers (nodes with children) are never split. `tests/run resize` covers the
+  windows this matters for.
 - One process, one pass per event, all commands of a pass in one RUN_COMMAND: a separate autotiler +
   cleaner raced (a cleanup could remove a wrapper made for a window focused in the meantime). The one
   exception is the open repair below: its follow-up pass runs on the daemon's own tagged tick. Within
   one event a command can be followed by a fresh tree read and more commands (a key move's repeat, the
   half refocus under `workspace_layout tabbed`).
-- The daemon prepares the focused split at startup and after focus/close/floating events. Sway can
-  send a focus event before a close changes the next window's shape (seeds 1, 4, 5).
+- The daemon prepares the focused split at startup and after focus/close/floating/fullscreen events.
+  Sway can send a focus event before a close changes the next window's shape (seeds 1, 4, 5).
 - Cleanup also runs on move. Never split on a `move` event: sway's directional move of a wrapped
   tile only takes it out of its wrapper, into the wrapper's slot (and resets the siblings' sizes, so
   the tile's rect can change). Rewrapping on every move would keep it in place for good. A key
@@ -79,15 +82,20 @@ CONFIG='workspace_open = half' tests/run scenarios   # the program reads this co
   scripts and mouse drags send no binding event and keep the old rule.
 - Whether a move only unwrapped is decided from the event stream, not from a tree read alone: a
   tree read after a key press can already show the next press. After each split the daemon sends a
-  tick naming the tile and its wrapper's slot; the tile's next move event consumes it and only
-  unwrapped if the tile is now in that slot. `tests/run keys` K3 sends two presses at once.
+  tick naming the tile and its wrapper's slot; when `plan_unwrap` removes ancestors above that wrapper
+  in the same pass, the slot is taken from the topmost removed ancestor. The tile's next move event
+  consumes the tick and only unwrapped if the tile is now in that slot. Only keybindings containing
+  `move` consume `unwrapped`, so unrelated keybindings after a `swaymsg move` don't rewrap it.
+  `tests/run keys` K3 sends two presses at once, and K5 covers closing a sibling before a move key.
 - If an opening joins the focused tile's siblings, wrap the old tile and move the new tile into the
   wrapper. A tagged IPC tick then rechecks the restored rectangle and prepares the next split,
   including when Sway keeps focus on the old tile. Scenarios 12–14 cover moves, manual `split none`,
   and opens that keep focus on the old tile.
 - Sway can resize the focused tile without sending a window event. On `new`, recheck the direction
-  using the rectangle occupied by the pair if it already shares a split. The F and M cases in
-  `tests/run resize` check an open after a resize without refocusing, including after a move.
+  using the rectangle occupied by the pair if it already shares a split; when the pair's parent is a
+  workspace, change the workspace layout via `focus parent; layout; focus` so Sway doesn't wrap both
+  in an extra container. The F, M and W cases in `tests/run resize` check an open after a resize or
+  workspace layout change without refocusing, including after a move.
 - `split`, `layout` and `split none` aimed at a con with `[con_id=]` emit no window event and don't move
   focus → no loop. `tests/scenarios.py` section 10: 30 focus commands → exactly 30 focus events. The open
   repair is the exception: its `mark` and `move container to mark` emit window events, so the daemon
@@ -116,9 +124,10 @@ CONFIG='workspace_open = half' tests/run scenarios   # the program reads this co
   moves the focus off that one. The daemon keeps one such wrapper per workspace, set by a focus key
   there and dropped by the next window focus there; a key press that changes nothing keeps it (F10).
   Sway reports `fullscreen_mode` 1 for every workspace, so only a con counts as fullscreen: two presses
-  that Sway itself takes to the workspace still record the wrapper (F11). Workspace events are handled
-  before a move event's result is passed on, so one can't drop a key move's rewrap (on sway 1.12 none
-  came between them in tests).
+  that Sway itself takes to the workspace still record the wrapper (F11). Workspace events, tick events,
+  and non-trigger window events (such as `mark`, `urgent`, or `title`) are handled or ignored before
+  a move event's `unwrapped` state is cleared, so none can drop a key move's repeat or rewrap
+  (`tests/run keys` K6 covers `move right, mark k6`).
 - A window opened while the workspace itself is focused goes, in Sway, right after the workspace's child
   focused last (the seat's focus stack), so `focus parent` from the left of two halves opens it between
   them. When a focus key left the focus on the workspace (dropped by the next window or workspace focus

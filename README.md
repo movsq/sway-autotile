@@ -22,8 +22,8 @@ takes half of the focused one, also where autotiling-rs would give it a smaller 
 
 - Splits the focused tile along its longer side so the next window takes half of it. Floating,
   fullscreen, tabbed, and stacked windows keep sway's own layout behavior.
-- Prepares the focused tile at startup and after focus, close, and floating changes. When a window
-  opens, it checks the split direction again in case the focused tile was resized.
+- Prepares the focused tile at startup and after focus, close, floating, and fullscreen changes. When a
+  window opens, it checks the split direction again in case the focused tile was resized.
 - Moves the tile on the first press of a move key. sway's directional `move` of a prepared tile only
   takes it out of its split, so the tile would need a second press to move. When a key binding ran
   the move, sway-autotile sends the same move again and then prepares the tile. A `move` from
@@ -42,8 +42,8 @@ takes half of the focused one, also where autotiling-rs would give it a smaller 
   focus (sway's `no_focus`) leaves the workspace selected, so the next new window goes to the end too.
   The `workspace_open` option in the [config file](#config-file) can give the new window half the
   workspace instead, or keep sway's placement.
-- Removes one-window split containers with `split none` after every focus change, close, move or
-  floating toggle. It keeps:
+- Removes one-window split containers with `split none` after every focus change, close, move, floating,
+  or fullscreen toggle. It keeps:
   - the focused window's own container, which decides where the next window goes;
   - tabbed and stacked containers, so a tab group with one tab stays a tab group;
   - containers that are marked or focused.
@@ -159,7 +159,8 @@ also overrides the file. It reads the file and the variables only at startup.
 
 A mistake doesn't stop the program. It prints a warning on stderr for each unknown key or variable, line
 without `=`, bad value, or file it can't read, such as a missing `--config` file, a directory, a file that
-isn't UTF-8 or a pipe that doesn't end within a second (`--config <(…)` works). A missing default file
+isn't UTF-8, a file over 1 MiB (such as `/dev/zero`), or a pipe that doesn't end within a second
+(`--config <(…)` works). A missing default file
 gets no warning, but a default file it isn't allowed to open does. After a warning it goes on as if that
 line, variable or file weren't there. The daemon's warnings go wherever sway sends the stderr of what it
 starts, so run `sway-autotile --check-config` after you edit the file to see them and the values it ends

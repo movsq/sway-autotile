@@ -3,7 +3,7 @@ so each section runs the program itself.
 
   1 -h / --help                usage, exit 0
   2 unknown option             error, exit 2, no IPC
-  3 SWAYSOCK not set           error, exit != 0
+  3 SWAYSOCK errors          unset, nonexistent or dead SWAYSOCK: error, exit != 0, no traceback
   4 --once --dry-run           prints the exact commands of one pass, changes nothing
   5 --once                     runs them, then exits
   6 daemon --dry-run           prints a pass per event, changes nothing
@@ -13,7 +13,8 @@ so each section runs the program itself.
  10 config file warnings       missing file, directory, bad UTF-8, unreadable, unknown key, bad value,
                                line without `=`: a warning naming the file and line, the line or file
                                skipped, exit 0 (--once, --dry-run, daemon); a FIFO whose writer stays
-                               idle: a warning after 1 s, no hang; --config <(…) is read in full
+                               idle: a warning after 1 s, no hang; --config <(…) is read in full;
+                               /dev/zero: a size warning, no hang or OOM
  11 default config file        found in $XDG_CONFIG_HOME, else ~/.config; one that can't be read, also
                                below a directory that can't be searched: a warning; no file at all:
                                defaults, silent
@@ -27,6 +28,7 @@ so each section runs the program itself.
  15 isolation                  tests/run removes every SWAY_AUTOTILE_* name from this environment
 """
 import os
+import socket
 import subprocess
 import sys
 import tempfile
@@ -62,11 +64,25 @@ p = run("--bogus")
 result(p.returncode == 2 and "unknown option(s): --bogus" in p.stderr and not p.stdout,
        f"2 --bogus: error, exit {p.returncode}: {p.stderr.strip()!r}")
 
-print("== 3 SWAYSOCK not set")
+print("== 3 SWAYSOCK errors")
 env = {k: v for k, v in os.environ.items() if k not in ("SWAYSOCK", "I3SOCK")}
 p = run("--once", "--dry-run", env=env)
 result(p.returncode != 0 and "SWAYSOCK is not set" in p.stderr,
        f"3 no SWAYSOCK: error, exit {p.returncode}: {p.stderr.strip()!r}")
+with tempfile.TemporaryDirectory() as sock_dir:
+    missing_sock = os.path.join(sock_dir, "missing.sock")
+    p = run("--once", "--dry-run", env={**env, "SWAYSOCK": missing_sock})
+    result(p.returncode != 0 and f"sway-autotile: {missing_sock}: No such file or directory" in p.stderr
+           and "Traceback" not in p.stderr,
+           f"3 nonexistent SWAYSOCK: error, exit {p.returncode}: {p.stderr.strip()!r}")
+    dead_sock = os.path.join(sock_dir, "dead.sock")
+    srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    srv.bind(dead_sock)
+    srv.close()
+    p = run("--once", "--dry-run", env={**env, "SWAYSOCK": dead_sock})
+    result(p.returncode != 0 and f"sway-autotile: {dead_sock}: Connection refused" in p.stderr
+           and "Traceback" not in p.stderr,
+           f"3 dead SWAYSOCK: error, exit {p.returncode}: {p.stderr.strip()!r}")
 
 # A leftover wrapper around a, and b focused with a sibling: one pass should unwrap a and split b.
 spawn("a")
@@ -253,6 +269,13 @@ p = subprocess.run(["bash", "-c", f'exec "$0" -B "$1" --check-config --config <(
                    env={**no_sock, "XDG_CONFIG_HOME": no_default})
 result(p.returncode == 0 and not p.stderr and p.stdout == "workspace_open = half\n",
        f"10 --config <(sleep 0.3; echo …): reads the pipe (rc {p.returncode}, out {p.stdout!r}, err {p.stderr.strip()!r})")
+for label, args in (("--check-config", ("--check-config",)), ("--once --dry-run", ("--once", "--dry-run"))):
+    start = time.monotonic()
+    p = run(*args, "--config", "/dev/zero", env={**os.environ, "XDG_CONFIG_HOME": no_default})
+    took = time.monotonic() - start
+    result(p.returncode == (1 if args[0] == "--check-config" else 0) and took < 5
+           and p.stderr == warned("/dev/zero: file exceeds 1048576 bytes"),
+           f"10 /dev/zero, {label}: warns after {took:.1f} s, exit {p.returncode} (err {p.stderr.strip()!r})")
 bad = config_file("bad-daemon", "workspace_open = on\n")
 warning = warned(f"{bad}:1: workspace_open: {BAD} 'on'")
 p = run("--once", "--config", bad)

@@ -170,4 +170,61 @@ for title in ("f3", "f4"):
     check_open(before, after, title, "14")
     result(focused_window(after)["id"] == wid("f1"), f"14 opening {title} keeps focus on f1")
 
+print("== 15 fullscreen across workspace switch")
+cmd("workspace 8")
+spawn("fs1")
+spawn("fs2")
+cmd(f"[con_id={wid('fs1')}] focus")
+cmd("fullscreen enable")
+cmd("workspace 2")
+cmd("workspace 8")
+cmd("fullscreen disable")
+before = check("15 after exiting fullscreen")
+spawn("fs3")
+check_open(before, check("15 open after fullscreen"), "fs3", "15")
+
+print("== 16 focused containers and marked wrappers")
+cmd("workspace 10")
+spawn("bg")
+bg_id = wid("bg")
+cmd("workspace 9")
+spawn("g1")
+spawn("g2")
+cmd(f"[con_id={wid('g2')}] focus")
+cmd("layout tabbed")
+spawn("g3")                                  # splith[g1, tabbed[g2, g3]]
+group_id = parents(tree())[wid("g2")]["id"]
+cmd("focus parent")                          # tabbed[g2, g3] is focused
+cmd(f"[con_id={bg_id}] kill", settle=0.6)
+t = check("16 close while tabbed container focused")
+result(parents(t)[group_id]["type"] == "workspace", "16 focused tabbed container not wrapped")
+
+cmd("workspace 10")
+spawn("p1")
+spawn("p2")
+cmd(f"[con_id={wid('p2')}] focus")
+spawn("p3")
+cmd(f"[con_id={wid('p3')}] focus")
+spawn("p4")                                  # splith[p1, splitv[p2, splith[p3, splitv[p4]]]]
+cmd("focus parent")
+cmd("focus parent")                          # splith[p3, splitv[p4]] is focused inside splitv
+cmd(f"[con_id={wid('p2')}] kill", settle=0.6)
+check("16 wrapper above focused container removed")
+
+cmd("workspace 11")
+spawn("mk1")
+spawn("mk2")
+cmd(f"[con_id={wid('mk2')}] focus")
+cmd("split h")
+marked_id = parents(tree())[wid("mk2")]["id"]
+cmd(f"[con_id={marked_id}] mark keep2")
+cmd(f"[con_id={marked_id}] split v")        # unmarked wrapper above the marked one
+cmd(f"[con_id={wid('mk1')}] focus")
+t = check("16 unmarked wrapper above marked wrapper removed")
+par = parents(t)
+wrapper = par.get(wid("mk2"))
+result(wrapper and wrapper["id"] == marked_id and wrapper["marks"] == ["keep2"]
+       and par[marked_id]["type"] == "workspace",
+       "16 marked wrapper kept at workspace level")
+
 finish()

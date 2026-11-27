@@ -2,7 +2,7 @@
 """sway-autotile — autotiling for sway that cleans up after itself.
 
 Autotiling: prepare the focused tile for a split along its longer side at startup and after a
-focus, close or floating change. Recheck the direction when a window opens, since Sway can resize
+focus, close, floating or fullscreen change. Recheck the direction when a window opens, since Sway can resize
 the focused tile without a window event. A directional move of a wrapped tile only takes it out of
 its wrapper. When a key binding ran that move, it is sent again and the tile wrapped again, so one
 press moves the tile. After a move without a binding (swaymsg, scripts), wait for the next open or
@@ -19,8 +19,8 @@ The split direction rule comes from autotiling-rs (github.com/ammgws/autotiling-
 Cleanup: a split wraps the window in a container with that one window inside. Once focus moves on,
 nothing opens there and the wrapper stays — an invisible extra level that makes moving windows,
 `layout tabbed` and resizing act on the wrapper instead of what you see. Closing windows leaves the
-same kind of one-child containers, sometimes in chains. After every focus/close/move/floating change
-every run of one-child split containers is removed with `split none`, except:
+same kind of one-child containers, sometimes in chains. After every focus/close/move/floating/fullscreen
+change every run of one-child split containers is removed with `split none`, except:
   - the focused window's own wrapper (it decides where the next window goes) — chains above it go;
   - runs containing a tabbed/stacked, focused or marked container.
 `split none` flattens *every* one-child ancestor above its target, not one level, so it is only
@@ -67,9 +67,13 @@ MAGIC = b"i3-ipc"
 HEADER = struct.Struct("=6sII")
 RUN_COMMAND, SUBSCRIBE, GET_TREE, SEND_TICK = 0, 2, 4, 10
 EVENT_WORKSPACE, EVENT_WINDOW, EVENT_BINDING, EVENT_TICK = 0x80000000, 0x80000003, 0x80000005, 0x80000007
-TRIGGERS = {"focus", "close", "move", "floating", "new"}
+TRIGGERS = {"focus", "close", "move", "floating", "fullscreen_mode", "new"}
 SPLITS = ("splith", "splitv")
-DIRECTIONAL_MOVE = re.compile(r"move\s+(left|right|up|down)(\s+\d+(\s*px)?)?", re.IGNORECASE)
+DIRECTIONAL_MOVE = re.compile(
+    r"move\s+(?:(?:window|container)\s+)?(left|right|up|down)(?:\s+\d+(?:\s*(?:px|ppt))?)?",
+    re.IGNORECASE,
+)
+MOVE_COMMAND = re.compile(r"\bmove\b", re.IGNORECASE)
 FOCUS_LEVEL = re.compile(r"focus\s+(parent|child)", re.IGNORECASE)
 
 
@@ -78,7 +82,11 @@ def connect():
     if not path:
         sys.exit("sway-autotile: SWAYSOCK is not set")
     s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    s.connect(path)
+    try:
+        s.connect(path)
+    except OSError as e:
+        s.close()
+        sys.exit(f"sway-autotile: {path}: {e.strerror or e}")
     return s
 
 
@@ -123,7 +131,7 @@ def is_wrapper(node):
 
 def hidden(node):
     """A one-child split con: on screen it looks exactly like its child."""
-    return is_wrapper(node) and node["layout"] in SPLITS and not node.get("marks")
+    return is_wrapper(node) and node["layout"] in SPLITS and not node.get("marks") and not node.get("fullscreen_mode")
 
 
 def tree_index(tree):
@@ -232,7 +240,7 @@ def plan_focus_level(tree, direction, base, exact=False):
 
 
 def removable(run):
-    return all(n["layout"] in SPLITS and not n["focused"] and not n.get("marks") for n in run)
+    return all(hidden(n) and not n["focused"] for n in run)
 
 
 def plan_unwrap(tree):
@@ -247,10 +255,10 @@ def plan_unwrap(tree):
         parent_chain = ancestors[:-1]
         if not parent_chain or not is_wrapper(parent_chain[-1]):
             return  # not under a run (parent has 2+ children, or is the workspace)
-        if node["focused"]:
-            return  # the focused window/container: its wrapper stays
-        if is_wrapper(node) and node["layout"] in SPLITS and not node["nodes"][0]["focused"]:
-            return  # inside a run, not under it (the focused node's own wrapper ends a run instead)
+        if node["focused"] and not node["nodes"]:
+            return  # the focused window: its wrapper stays
+        if hidden(node) and not node["focused"] and not (node["nodes"][0]["focused"] and not node["nodes"][0]["nodes"]):
+            return  # inside a run, not under it (the focused window's own wrapper ends a run instead)
         run = []
         for anc in reversed(parent_chain):
             if not is_wrapper(anc):
@@ -287,7 +295,7 @@ def split_target(tree):
     if not hit:
         return None
     node, parent = hit
-    if node.get("fullscreen_mode") or (node.get("percent") or 0) > 1.0:
+    if node["nodes"] or node.get("fullscreen_mode") or (node.get("percent") or 0) > 1.0:
         return None
     if parent["layout"] in SPLITS:
         return node, parent
@@ -328,7 +336,14 @@ def orient_pair(parent, old_id):
     # A resize can change the old tile's longer side without sending a window event. Use the
     # combined rectangle of the pair, which still occupies the old tile's space.
     want = split_layout(parent)
-    return [f"[con_id={old_id}] layout {want}"] if parent["layout"] != want else []
+    if parent["layout"] == want:
+        return []
+    if parent["type"] == "workspace":
+        # `layout` on a workspace's child wraps all its children in a new con, so it goes to the
+        # workspace itself, then focus returns to whichever tile had it.
+        focused = next((c["id"] for c in parent["nodes"] if c["focused"]), old_id)
+        return [f"[con_id={old_id}] focus parent", f"layout {want}", f"[con_id={focused}] focus"]
+    return [f"[con_id={old_id}] layout {want}"]
 
 
 def plan_open(tree, old_id, new_id):
@@ -430,20 +445,28 @@ def plan_workspace_refocus(tree, ws_id, new_id):
 
 def run_pass(sock, tree, dry_run, debug, moved=False):
     """Returns (focused tile id or None, its wrapper's slot if the tile is left alone in one)."""
-    commands = [f"[con_id={t['id']}] split none" for t in plan_unwrap(tree)]
+    unwrapped_targets = plan_unwrap(tree)
+    commands = [f"[con_id={t['id']}] split none" for t in unwrapped_targets]
     hit = split_target(tree)
-    if hit and not moved:
-        split = plan_split(*hit)
-        if split:
-            commands.append(split)
-    run_commands(sock, commands, dry_run, debug)
-    if not hit or hit[0]["nodes"]:
+    split = plan_split(*hit) if hit and not moved else None
+    if split:
+        commands.append(split)
+    ok = run_commands(sock, commands, dry_run, debug) if commands else True
+    if not hit:
         return None, None
     node, parent = hit
     if is_wrapper(parent):
+        if ok and any(t["id"] == parent["id"] for t in unwrapped_targets):
+            # `split none` removes every contiguous one-child ancestor above `parent`, moving
+            # `parent` into the topmost removed ancestor's slot.
+            _, parent_of = tree_index(tree)
+            top = parent
+            while top["id"] in parent_of and is_wrapper(parent_of[top["id"]]):
+                top = parent_of[top["id"]]
+            return node["id"], slot(tree, top["id"])
         return node["id"], slot(tree, parent["id"])
     if not moved and len(parent["nodes"]) >= 2:
-        return node["id"], slot(tree, node["id"])  # its new wrapper takes this place
+        return node["id"], slot(tree, node["id"]) if ok else None  # its new wrapper takes this place
     return node["id"], None
 
 
@@ -493,24 +516,33 @@ ENV_PREFIX = "SWAY_AUTOTILE_"  # + the key upper-cased: overrides the file
 
 
 READ_WAIT = 1.0  # seconds a config pipe may take to reach its end, e.g. --config <(…)
+READ_LIMIT = 1 << 20  # 1 MiB: guard against endless streams like /dev/zero or <(yes)
 
 
 def read_text(path):
     """The file's text. A pipe or terminal is read without blocking for good: one that reaches no end
-    within READ_WAIT seconds, such as a FIFO with an idle writer or /dev/stdin on a terminal, fails."""
+    within READ_WAIT seconds, such as a FIFO with an idle writer or /dev/stdin on a terminal, or
+    exceeds READ_LIMIT bytes, such as /dev/zero, fails."""
     fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_CLOEXEC)  # opening a FIFO doesn't wait
     try:
-        chunks, deadline = [], time.monotonic() + READ_WAIT
+        poller = select.poll()
+        poller.register(fd, select.POLLIN)
+        chunks, total, deadline = [], 0, time.monotonic() + READ_WAIT
         while True:
             try:
                 chunk = os.read(fd, 65536)
             except BlockingIOError:
                 left = deadline - time.monotonic()
-                if left <= 0 or not select.select([fd], [], [], left)[0]:
+                if left <= 0 or not poller.poll(left * 1000):
                     raise OSError(errno.ETIMEDOUT, f"no end of input within {READ_WAIT:g} s (a pipe or terminal?)")
                 continue
             if not chunk:
                 return b"".join(chunks).decode("utf-8")
+            total += len(chunk)
+            if total > READ_LIMIT:
+                raise OSError(errno.EFBIG, f"file exceeds {READ_LIMIT} bytes")
+            if time.monotonic() >= deadline:
+                raise OSError(errno.ETIMEDOUT, f"no end of input within {READ_WAIT:g} s (a pipe or terminal?)")
             chunks.append(chunk)
     finally:
         os.close(fd)
@@ -673,35 +705,8 @@ def main():
                     exact = False
                     run_commands(sock, commands, dry_run, debug)
             continue
-        moved, unwrapped = unwrapped, None
-        if kind == EVENT_BINDING:
-            command = event["binding"]["command"].strip()
-            level = FOCUS_LEVEL.fullmatch(command)
-            if level:
-                # The key's focus parent/child may have stopped on a wrapper, which looks like the
-                # window inside it: go on to the level the user sees. Focusing a con that is no
-                # window emits no event; focusing a window emits a focus event, handled as any other.
-                tree = request(sock, GET_TREE)
-                commands, base, (ws, restore) = plan_focus_level(tree, level[1].lower(), base, exact)
-                exact = False
-                restores.pop(ws, None)
-                if restore:
-                    restores[ws] = restore
-                node = tree_index(tree)[0].get(base)
-                selected = base if node and node["type"] == "workspace" else None
-                run_commands(sock, commands, dry_run, debug)
-            elif moved and not pending:
-                # A key ran `move <dir>` and only took the tile out of its wrapper: move it as the
-                # key asked, then wrap it again. Sway sends no binding event for this command.
-                node_id, in_place = moved
-                tree = request(sock, GET_TREE)
-                hit = focused_tiling(tree)
-                if in_place and DIRECTIONAL_MOVE.fullmatch(command) and hit and hit[0]["id"] == node_id:
-                    if run_commands(sock, [f"[con_id={node_id}] {command}"], dry_run, debug):
-                        tree = request(sock, GET_TREE)
-                prepare(tree)
-            continue
         if kind == EVENT_TICK:
+            # Handled before `unwrapped` is passed on: a stray tick must not drop a key move's rewrap.
             payload = event.get("payload", "")
             if payload.startswith(ready_tick + " "):
                 node_id, parent_id, index = map(int, payload.split()[1:])
@@ -720,12 +725,42 @@ def main():
                     else:
                         prepare(tree)
             continue
-        if kind == EVENT_WINDOW and event.get("change") == "focus":
+        if kind == EVENT_WINDOW and event.get("change") not in TRIGGERS:
+            continue  # e.g. mark/urgent/title between a move binding's move and binding events
+        moved, unwrapped = unwrapped, None
+        if kind == EVENT_BINDING:
+            command = event["binding"]["command"].strip()
+            level = FOCUS_LEVEL.fullmatch(command)
+            if level:
+                # The key's focus parent/child may have stopped on a wrapper, which looks like the
+                # window inside it: go on to the level the user sees. Focusing a con that is no
+                # window emits no event; focusing a window emits a focus event, handled as any other.
+                tree = request(sock, GET_TREE)
+                commands, base, (ws, restore) = plan_focus_level(tree, level[1].lower(), base, exact)
+                exact = False
+                restores.pop(ws, None)
+                if restore:
+                    restores[ws] = restore
+                node = tree_index(tree)[0].get(base)
+                selected = base if node and node["type"] == "workspace" else None
+                run_commands(sock, commands, dry_run, debug)
+            elif moved and not pending and MOVE_COMMAND.search(command):
+                # A key ran `move <dir>` and only took the tile out of its wrapper: move it as the
+                # key asked, then wrap it again. Sway sends no binding event for this command.
+                node_id, in_place = moved
+                tree = request(sock, GET_TREE)
+                hit = focused_tiling(tree)
+                if in_place and DIRECTIONAL_MOVE.fullmatch(command) and hit and hit[0]["id"] == node_id:
+                    if run_commands(sock, [f"[con_id={node_id}] {command}"], dry_run, debug):
+                        tree = request(sock, GET_TREE)
+                prepare(tree)
+            continue
+        if kind != EVENT_WINDOW:
+            continue
+        if event.get("change") == "focus":
             base = event["container"]["id"]  # focus on a con that is no window sends no event
             exact = True
             selected = None
-        if kind != EVENT_WINDOW or event.get("change") not in TRIGGERS:
-            continue
         change, node_id = event["change"], event["container"]["id"]
         if change == "new":
             placed = plan_append(request(sock, GET_TREE), selected, node_id, workspace_open) if selected else None
@@ -776,5 +811,5 @@ def main():
 if __name__ == "__main__":
     try:
         main()
-    except (ConnectionError, BrokenPipeError, KeyboardInterrupt):
+    except (ConnectionError, KeyboardInterrupt):
         pass
