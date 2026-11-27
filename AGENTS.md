@@ -16,7 +16,7 @@ tests/sequences.py      # 9 seeded open/focus/close sequences (SEEDS table), pla
 tests/resize.py         # windows whose longer side already matches their parent's layout
 tests/keys.py           # one press of a `move` key binding moves the window (wtype presses the keys)
 tests/focus.py          # one press of a `focus parent`/`focus child` key changes the focus on screen; run
-                       # three times, workspace_open unset (end), = half, = sway (F12-F22 check each)
+                       # three times, workspace_open unset (end), = half, = sway (F12-F23 check each)
 tests/cli.py            # every documented way to run it: --help, --once, --dry-run, --config, daemon, errors
 tests/lib.py, events.py # helpers and the placement checks; event logger (counts focus events)
 ```
@@ -66,7 +66,9 @@ CONFIG='workspace_open = half' tests/run scenarios   # the program reads this co
   container. `tests/run resize` covers the windows this matters for.
 - One process, one pass per event, all commands of a pass in one RUN_COMMAND: a separate autotiler +
   cleaner raced (a cleanup could remove a wrapper made for a window focused in the meantime). The one
-  exception is the open repair below: its follow-up pass runs on the daemon's own tagged tick.
+  exception is the open repair below: its follow-up pass runs on the daemon's own tagged tick. Within
+  one event a command can be followed by a fresh tree read and more commands (a key move's repeat, the
+  half refocus under `workspace_layout tabbed`).
 - The daemon prepares the focused split at startup and after focus/close/floating events. Sway can
   send a focus event before a close changes the next window's shape (seeds 1, 4, 5).
 - Cleanup also runs on move. Never split on a `move` event: sway's directional move of a wrapped
@@ -133,18 +135,21 @@ CONFIG='workspace_open = half' tests/run scenarios   # the program reads this co
   the move and back squashed a marked container among the children (F16). With one other child only the
   workspace's own layout is set (`focus parent; layout`): `[con_id=new] layout` would wrap both in a new
   con (F20). Half ends on `[con_id=new] focus`, or `focus parent` for a no_focus window, so the workspace
-  stays selected (F19). After every move that takes a con out of its parent Sway squashes the whole
-  workspace (1.12 `workspace_squash`): a one-child split con across its split child, inside a parent split
-  along the child's axis, is dissolved, marks and all, and its windows spread into the parent. The
-  reorder's swaps never squash, half's move does: on a workspace holding such a pair half only puts the
-  window at the end (`squashable`, F21). Both modes do nothing when the `new` tree read shows neither the
-  window nor the workspace focused (the selection is stale), when the workspace has no other tiled child
-  (only floating ones, F18), or when a con there is fullscreen (its directional move would go to the next
-  output). A window opened on the selected workspace never gets the open repair, in any mode (sway too
-  keeps `selected`): a `swaymsg move` can leave the tile unwrapped, and the repair then put the window in
-  a split with it (F22). Known limits: `swaymsg focus child` onto a group sends no event, so a window
-  opened then still counts as opened on the workspace; a window that maps before the daemon reads the
-  key's binding event isn't seen as opened there (that tree read already shows it focused); a window that
-  closes between the daemon's tree read and its commands can make half's unscoped `split`/`layout` act on
-  whatever has the focus then, or the reorder's moves swap the wrong cons.
+  stays selected (F19). With `workspace_layout tabbed|stacking` Sway puts a con moved to the workspace
+  level into a group of its own, so that `focus parent` stops on the group: a fresh tree read after the
+  batch then sends `[con_id=group] focus parent` (F23). After every move that takes a con out of its
+  parent Sway squashes the whole workspace (1.12 `workspace_squash`): a one-child split con across its
+  split child, inside a parent split along the child's axis, is dissolved, marks and all, and its windows
+  spread into the parent. The reorder's swaps never squash, half's move does: on a workspace holding such
+  a pair half only puts the window at the end (`squashable`, F21). Both modes do nothing when the `new`
+  tree read shows neither the window nor the workspace focused (the selection is stale), when the
+  workspace has no other tiled child (only floating ones, F18), or when a con there is fullscreen (its
+  directional move would go to the next output). A window opened on the selected workspace never gets the
+  open repair, in any mode (sway too keeps `selected`): a `swaymsg move` can leave the tile unwrapped, and
+  the repair then put the window in a split with it (F22). Known limits: `swaymsg focus child` onto a
+  group sends no event, so a window opened then still counts as opened on the workspace; a window that
+  maps before the daemon reads the key's binding event isn't seen as opened there (that tree read already
+  shows it focused); a window that closes between the daemon's tree read and its commands can make half's
+  unscoped `split`/`layout` act on whatever has the focus then, or the reorder's moves swap the wrong
+  cons.
 - No dependencies beyond the Python standard library (no i3ipc): keep it that way.

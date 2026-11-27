@@ -88,7 +88,8 @@ trap cleanup EXIT
 # XDG_CONFIG_HOME is the case's own dir and every SWAY_AUTOTILE_* name is removed from the python
 # processes' environment (`env -u`, also names that aren't shell identifiers), so the program never
 # reads the user's settings; CONFIG='key = value' case_ … writes CONFIG (lines separated by newlines)
-# into the config file there, default: no file. AUTOTILE_* variables pass through.
+# into the config file there, default: no file. AUTOTILE_* variables pass through. The test script gets
+# AUTOTILE_SWAY_CONFIG, the case's sway config: a config-only setting goes there, then `swaymsg reload`.
 case_() {
     local name=$1; shift
     local daemon=${DAEMON:-1}
@@ -115,7 +116,7 @@ case_() {
             pid=$!
         fi
         sleep 1
-        AUTOTILE_EVENTS="$dir/events" AUTOTILE_DAEMON_PID="$pid" env "${strip[@]}" python3 -B "$@" >"$dir/out" 2>&1 || rc=$?
+        AUTOTILE_EVENTS="$dir/events" AUTOTILE_DAEMON_PID="$pid" AUTOTILE_SWAY_CONFIG="$dir/config" env "${strip[@]}" python3 -B "$@" >"$dir/out" 2>&1 || rc=$?
         grep -E '^FAIL ' "$dir/out"
         if [[ $rc != 0 ]]; then echo "FAIL $name: test script exited $rc"; tail -3 "$dir/out"; failed=1; fi
         if [[ -n $pid ]] && ! kill -0 "$pid" 2>/dev/null; then echo "FAIL $name: the autotiler died"; failed=1; fi

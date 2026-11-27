@@ -413,6 +413,18 @@ def plan_half(ws, new):
             f"[con_id={new['id']}] move {'right' if want == 'splith' else 'down'}", refocus]
 
 
+def plan_workspace_refocus(tree, ws_id, new_id):
+    """After half's move: with Sway's `workspace_layout tabbed|stacking`, a con moved to the workspace
+    level gets a group of its own, so a no_focus window's `focus parent` stopped on that group. Focus
+    the workspace again, through the group."""
+    by_id, parent_of = tree_index(tree)
+    node = focused_con(tree)
+    if (node and node["type"] == "con" and parent_of.get(node["id"]) is by_id.get(ws_id)
+            and [child["id"] for child in node["nodes"]] == [new_id]):
+        return [f"[con_id={node['id']}] focus parent"]
+    return []
+
+
 def run_pass(sock, tree, dry_run, debug, moved=False):
     """Returns (focused tile id or None, its wrapper's slot if the tile is left alone in one)."""
     commands = [f"[con_id={t['id']}] split none" for t in plan_unwrap(tree)]
@@ -690,7 +702,9 @@ def main():
                 # Its focus event, read next, prepares it; the tree read then already shows it moved.
                 # "half" ends on the window's own focus command: the same focus event, one more. A
                 # no_focus window sends none, and the focus ends on the workspace: it stays selected.
-                run_commands(sock, placed, dry_run, debug)
+                if run_commands(sock, placed, dry_run, debug) and workspace_open == "half":
+                    run_commands(sock, plan_workspace_refocus(request(sock, GET_TREE), selected, node_id),
+                                 dry_run, debug)
             elif previous:
                 tree = request(sock, GET_TREE)
                 commands, follow_up = plan_open(tree, previous, node_id)

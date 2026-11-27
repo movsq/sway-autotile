@@ -39,6 +39,8 @@ workspace 9, workspace 9`; wtype presses them.
   F22 swaymsg move takes the window out of its wrapper, then focus parent selects the workspace: the new
       window opens on the workspace (end, sway: after that window; half: the right half), not in a split
       with the window
+  F23 `workspace_layout tabbed` (appended to the sway config, reload): a no_focus window opened on the
+      selected workspace leaves it selected; with half its tab group takes the right half
   `tests/run focus` runs this file once per workspace_open value and names it in
   AUTOTILE_EXPECT_WORKSPACE_OPEN. With end, F14-F17, F19 and F20 check that the new window is last and
   (F14, F15, F17, F19) that every window's rect equals Sway's own end placement, built on another workspace
@@ -508,5 +510,25 @@ else:                                            # end and sway alike: Sway puts
     top = [c["name"] if not c["nodes"] else [g["name"] for g in c["nodes"]] for c in ws["nodes"]]
     result(top[:2] == ["un1", "un2"] and slot_of(t, "un3") == 2 and len(top) == 3,
            f"F22 un3 opens on the workspace after un2, not in a split with it: {top}")
+
+print("== F23 workspace_layout tabbed: a no_focus window leaves the workspace selected (last: changes the config)")
+with open(os.environ["AUTOTILE_SWAY_CONFIG"], "a") as f:
+    f.write("workspace_layout tabbed\n")         # config-only: Sway rejects it as a command
+cmd("reload", settle=1)
+cmd("workspace 29")
+spawn("tb1")
+spawn("tb2")                                     # splith[tabbed[tb1, tb2]]
+cmd(f"[con_id={wid('tb2')}] move right")         # splith[tabbed[tb1], tabbed[tb2]]
+cmd(f"[con_id={wid('tb1')}] focus")
+press("a")                                       # tb1's tab group
+press("a")
+workspace_focused(tree(), "29", "F23 focus parent")
+spawn("nftb1")
+t = tree()
+workspace_focused(t, "29", "F23 after the no_focus open")
+if MODE == "half":                               # Sway puts the moved window in a tab group of its own
+    node, ws = top_of(t, "nftb1")
+    r = [node["rect"][k] for k in ("x", "y", "width", "height")]
+    result(len(ws["nodes"]) == 2 and r == RIGHT, f"F23 nftb1's group {r} takes the right half {RIGHT}")
 
 finish()
