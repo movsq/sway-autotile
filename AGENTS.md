@@ -79,8 +79,10 @@ CONFIG='workspace_open = half' tests/run scenarios   # the program reads this co
   scripts and mouse drags send no binding event and keep the old rule.
 - Whether a move only unwrapped is decided from the event stream, not from a tree read alone: a
   tree read after a key press can already show the next press. After each split the daemon sends a
-  tick naming the tile and its wrapper's slot; the tile's next move event consumes it and only
-  unwrapped if the tile is now in that slot. `tests/run keys` K3 sends two presses at once.
+  tick naming the tile and its wrapper's slot; when `plan_unwrap` removes ancestors above that wrapper
+  in the same pass, the slot is taken from the topmost removed ancestor. The tile's next move event
+  consumes the tick and only unwrapped if the tile is now in that slot. `tests/run keys` K3 sends
+  two presses at once, and K5 covers closing a sibling before a move key.
 - If an opening joins the focused tile's siblings, wrap the old tile and move the new tile into the
   wrapper. A tagged IPC tick then rechecks the restored rectangle and prepares the next split,
   including when Sway keeps focus on the old tile. Scenarios 12–14 cover moves, manual `split none`,

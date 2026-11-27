@@ -430,20 +430,28 @@ def plan_workspace_refocus(tree, ws_id, new_id):
 
 def run_pass(sock, tree, dry_run, debug, moved=False):
     """Returns (focused tile id or None, its wrapper's slot if the tile is left alone in one)."""
-    commands = [f"[con_id={t['id']}] split none" for t in plan_unwrap(tree)]
+    unwrapped_targets = plan_unwrap(tree)
+    commands = [f"[con_id={t['id']}] split none" for t in unwrapped_targets]
     hit = split_target(tree)
-    if hit and not moved:
-        split = plan_split(*hit)
-        if split:
-            commands.append(split)
-    run_commands(sock, commands, dry_run, debug)
+    split = plan_split(*hit) if hit and not moved else None
+    if split:
+        commands.append(split)
+    ok = run_commands(sock, commands, dry_run, debug) if commands else True
     if not hit or hit[0]["nodes"]:
         return None, None
     node, parent = hit
     if is_wrapper(parent):
+        if ok and any(t["id"] == parent["id"] for t in unwrapped_targets):
+            # `split none` removes every contiguous one-child ancestor above `parent`, moving
+            # `parent` into the topmost removed ancestor's slot.
+            _, parent_of = tree_index(tree)
+            top = parent
+            while top["id"] in parent_of and is_wrapper(parent_of[top["id"]]):
+                top = parent_of[top["id"]]
+            return node["id"], slot(tree, top["id"])
         return node["id"], slot(tree, parent["id"])
     if not moved and len(parent["nodes"]) >= 2:
-        return node["id"], slot(tree, node["id"])  # its new wrapper takes this place
+        return node["id"], slot(tree, node["id"]) if ok else None  # its new wrapper takes this place
     return node["id"], None
 
 

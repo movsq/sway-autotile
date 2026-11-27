@@ -7,6 +7,7 @@ through a virtual keyboard, so Sway sends binding events as for a real key.
   K2  each press of left/up/down/right moves the window, also across levels of the tree
   K3  two presses sent at once move the window twice
   K4  swaymsg moves (no binding event) still move it on the second command, then keys again on the first
+  K5  closing a sibling unwraps the ancestor above the focused wrapper, and one press still moves
 """
 import subprocess
 import time
@@ -114,5 +115,19 @@ press("right")                               # wrapped again: the key's move is 
 result(order("s1", "s2") == ["s2", "s1"], f"K4 next key move right ({order('s1', 's2')})")
 check("K4")
 open_and_check("s3", "K4 after key moves")
+
+print("== K5 move key after closing sibling")
+cmd("workspace 5")
+spawn("c1")
+spawn("c2")
+cmd(f"[con_id={wid('c2')}] focus")
+spawn("c3")                                  # splith[c1, splitv[c2, splith[c3]]]
+cmd(f"[con_id={wid('c2')}] kill", settle=0.6)
+check("K5 after closing sibling")
+press("left")
+check("K5 move left")
+result(order("c1", "c3") == ["c3", "c1"],
+       f"K5 one press of move left after close: c3 on the left ({order('c1', 'c3')})")
+open_and_check("c4", "K5 after move")
 
 finish()
