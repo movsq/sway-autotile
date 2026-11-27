@@ -521,13 +521,16 @@ def load_config(path, warnings):
     Each problem goes to `warnings` and is skipped: a bad line changes nothing, a file that can't be
     read gives the defaults."""
     config = {key: default for key, (default, _) in OPTIONS.items()}
-    if path is None:
+    implicit = path is None
+    if implicit:
         base = os.environ.get("XDG_CONFIG_HOME") or os.path.join(os.path.expanduser("~"), ".config")
         path = os.path.join(base, "sway-autotile", "config")
-        if not os.path.exists(path):
-            return config
     try:
         lines = read_text(path).splitlines()
+    except FileNotFoundError as e:
+        if not implicit:  # only the default file may be missing; one below an unreadable dir warns
+            warnings.append(f"{path}: {e.strerror}")
+        return config
     except (OSError, UnicodeDecodeError) as e:
         warnings.append(f"{path}: {getattr(e, 'strerror', None) or e}")
         return config

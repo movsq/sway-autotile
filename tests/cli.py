@@ -14,8 +14,9 @@ so each section runs the program itself.
                                line without `=`: a warning naming the file and line, the line or file
                                skipped, exit 0 (--once, --dry-run, daemon); a FIFO whose writer stays
                                idle: a warning after 1 s, no hang; --config <(…) is read in full
- 11 default config file        found in $XDG_CONFIG_HOME, else ~/.config; one that can't be read: a
-                               warning; no file at all: defaults, silent
+ 11 default config file        found in $XDG_CONFIG_HOME, else ~/.config; one that can't be read, also
+                               below a directory that can't be searched: a warning; no file at all:
+                               defaults, silent
  12 SWAY_AUTOTILE_<KEY>        overrides the file and the default; empty counts as unset; a bad value
                                or an unknown SWAY_AUTOTILE_* variable: a warning naming it, skipped
  13 --config argument errors   no path, a path starting with -, given twice: error, exit 2, no IPC
@@ -300,6 +301,20 @@ for label, env, want in (("a directory", {}, "end"), ("a directory, valid variab
            and p.stdout == f"workspace_open = {want}\n",
            f"11 {label} at the default path: warns, {want} (rc {p.returncode}, out {p.stdout!r}, "
            f"err {p.stderr.strip()!r})")
+locked = os.path.join(tmp.name, "xdg-locked")  # the default file below a directory that can't be searched
+config_file(os.path.join(locked, "sway-autotile", "config"), "workspace_open = half\n")
+os.chmod(locked, 0)
+try:
+    if os.access(os.path.join(locked, "sway-autotile"), os.F_OK):
+        print("   (running as root: no unsearchable directory)")
+    else:
+        p = check_config(env={"XDG_CONFIG_HOME": locked})
+        result(p.returncode == 1 and p.stdout == "workspace_open = end\n"
+               and p.stderr == warned(f"{locked}/sway-autotile/config: Permission denied"),
+               f"11 below an unsearchable XDG_CONFIG_HOME: warns, not taken for no file (rc {p.returncode}, "
+               f"out {p.stdout!r}, err {p.stderr.strip()!r})")
+finally:
+    os.chmod(locked, 0o700)
 env = {k: v for k, v in os.environ.items() if k != "XDG_CONFIG_HOME"}
 env["HOME"] = os.path.join(tmp.name, "home-none")
 for label, xdg in (("no file in XDG_CONFIG_HOME or ~/.config", no_default), ("no file in ~/.config", None)):

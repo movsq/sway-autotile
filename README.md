@@ -159,10 +159,11 @@ also overrides the file. It reads the file and the variables only at startup.
 
 A mistake doesn't stop the program. It prints a warning on stderr for each unknown key or variable, line
 without `=`, bad value, or file it can't read, such as a missing `--config` file, a directory, a file that
-isn't UTF-8 or a pipe that doesn't end within a second (`--config <(…)` works). Then it goes on as if that
+isn't UTF-8 or a pipe that doesn't end within a second (`--config <(…)` works). A missing default file
+gets no warning, but a default file it isn't allowed to open does. After a warning it goes on as if that
 line, variable or file weren't there. The daemon's warnings go wherever sway sends the stderr of what it
-starts, so run `sway-autotile --check-config` after you edit the file to see them and the values it ends up
-with.
+starts, so run `sway-autotile --check-config` after you edit the file to see them and the values it ends
+up with.
 
 ## Tests
 
