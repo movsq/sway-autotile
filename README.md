@@ -183,7 +183,7 @@ need sway, python3 and kitty, and `tests/run keys` and `tests/run focus` need wt
 `--title` option, set `AUTOTILE_TEST_TERMINAL`. `SEEDS="1 2" tests/run sequences` runs a subset, and
 `KEEP=1` keeps the output directory.
 
-The tests never read your config file or `SWAY_AUTOTILE_` variables: each case gets its own
+The tests never read your config file or `SWAY_AUTOTILE_` variables. Each case gets its own
 `XDG_CONFIG_HOME` and none of those variables. `CONFIG='workspace_open = half' tests/run scenarios` writes
 that config file for each case; `tests/run focus` ignores `CONFIG` and sets its own.
 
@@ -196,8 +196,8 @@ focus change must move no window, and a close must make none smaller.
 Issues and pull requests are welcome. Changes to `sway-autotile` should pass `tests/run`. The design
 constraints in [AGENTS.md](AGENTS.md) explain the non-obvious parts: why `split none` is only sent for
 whole runs of split containers, why windows are split even when their parent already has the right
-layout, why a key's move is sometimes sent twice, why a key's focus parent can move focus two levels, and why
-it's one process.
+layout, why a key's move is sometimes sent twice, why a key's `focus parent` can go up two levels of the
+tree, and why it's one process.
 
 ## Acknowledgements
 

@@ -149,7 +149,10 @@ CONFIG='workspace_open = half' tests/run scenarios   # the program reads this co
   the repair then put the window in a split with it (F22). Known limits: `swaymsg focus child` onto a
   group sends no event, so a window opened then still counts as opened on the workspace; a window that
   maps before the daemon reads the key's binding event isn't seen as opened there (that tree read already
-  shows it focused); a window that closes between the daemon's tree read and its commands can make half's
-  unscoped `split`/`layout` act on whatever has the focus then, or the reorder's moves swap the wrong
-  cons.
+  shows it focused); a window that closes between the daemon's tree read and its commands (a window of
+  microseconds) turns the reorder's moves on the con before it: past it if that is a window (the order
+  changes), into it if it is a container (the structure changes, and Sway squashes the workspace), and
+  Sway runs the rest of a batch after a failed `[con_id=new]` command, so half's unscoped `split`/`layout`
+  act on whatever has the focus then. No sway 1.12 command moves a con past the window by naming both and
+  keeps every size (`move container to mark` resets the moved con's).
 - No dependencies beyond the Python standard library (no i3ipc): keep it that way.
