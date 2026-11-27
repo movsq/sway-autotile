@@ -69,7 +69,11 @@ RUN_COMMAND, SUBSCRIBE, GET_TREE, SEND_TICK = 0, 2, 4, 10
 EVENT_WORKSPACE, EVENT_WINDOW, EVENT_BINDING, EVENT_TICK = 0x80000000, 0x80000003, 0x80000005, 0x80000007
 TRIGGERS = {"focus", "close", "move", "floating", "fullscreen_mode", "new"}
 SPLITS = ("splith", "splitv")
-DIRECTIONAL_MOVE = re.compile(r"move\s+(left|right|up|down)(\s+\d+(\s*px)?)?", re.IGNORECASE)
+DIRECTIONAL_MOVE = re.compile(
+    r"move\s+(?:(?:window|container)\s+)?(left|right|up|down)(?:\s+\d+(?:\s*(?:px|ppt))?)?",
+    re.IGNORECASE,
+)
+MOVE_COMMAND = re.compile(r"\bmove\b", re.IGNORECASE)
 FOCUS_LEVEL = re.compile(r"focus\s+(parent|child)", re.IGNORECASE)
 
 
@@ -688,35 +692,8 @@ def main():
                     exact = False
                     run_commands(sock, commands, dry_run, debug)
             continue
-        moved, unwrapped = unwrapped, None
-        if kind == EVENT_BINDING:
-            command = event["binding"]["command"].strip()
-            level = FOCUS_LEVEL.fullmatch(command)
-            if level:
-                # The key's focus parent/child may have stopped on a wrapper, which looks like the
-                # window inside it: go on to the level the user sees. Focusing a con that is no
-                # window emits no event; focusing a window emits a focus event, handled as any other.
-                tree = request(sock, GET_TREE)
-                commands, base, (ws, restore) = plan_focus_level(tree, level[1].lower(), base, exact)
-                exact = False
-                restores.pop(ws, None)
-                if restore:
-                    restores[ws] = restore
-                node = tree_index(tree)[0].get(base)
-                selected = base if node and node["type"] == "workspace" else None
-                run_commands(sock, commands, dry_run, debug)
-            elif moved and not pending:
-                # A key ran `move <dir>` and only took the tile out of its wrapper: move it as the
-                # key asked, then wrap it again. Sway sends no binding event for this command.
-                node_id, in_place = moved
-                tree = request(sock, GET_TREE)
-                hit = focused_tiling(tree)
-                if in_place and DIRECTIONAL_MOVE.fullmatch(command) and hit and hit[0]["id"] == node_id:
-                    if run_commands(sock, [f"[con_id={node_id}] {command}"], dry_run, debug):
-                        tree = request(sock, GET_TREE)
-                prepare(tree)
-            continue
         if kind == EVENT_TICK:
+            # Handled before `unwrapped` is passed on: a stray tick must not drop a key move's rewrap.
             payload = event.get("payload", "")
             if payload.startswith(ready_tick + " "):
                 node_id, parent_id, index = map(int, payload.split()[1:])
@@ -735,12 +712,42 @@ def main():
                     else:
                         prepare(tree)
             continue
-        if kind == EVENT_WINDOW and event.get("change") == "focus":
+        if kind == EVENT_WINDOW and event.get("change") not in TRIGGERS:
+            continue  # e.g. mark/urgent/title between a move binding's move and binding events
+        moved, unwrapped = unwrapped, None
+        if kind == EVENT_BINDING:
+            command = event["binding"]["command"].strip()
+            level = FOCUS_LEVEL.fullmatch(command)
+            if level:
+                # The key's focus parent/child may have stopped on a wrapper, which looks like the
+                # window inside it: go on to the level the user sees. Focusing a con that is no
+                # window emits no event; focusing a window emits a focus event, handled as any other.
+                tree = request(sock, GET_TREE)
+                commands, base, (ws, restore) = plan_focus_level(tree, level[1].lower(), base, exact)
+                exact = False
+                restores.pop(ws, None)
+                if restore:
+                    restores[ws] = restore
+                node = tree_index(tree)[0].get(base)
+                selected = base if node and node["type"] == "workspace" else None
+                run_commands(sock, commands, dry_run, debug)
+            elif moved and not pending and MOVE_COMMAND.search(command):
+                # A key ran `move <dir>` and only took the tile out of its wrapper: move it as the
+                # key asked, then wrap it again. Sway sends no binding event for this command.
+                node_id, in_place = moved
+                tree = request(sock, GET_TREE)
+                hit = focused_tiling(tree)
+                if in_place and DIRECTIONAL_MOVE.fullmatch(command) and hit and hit[0]["id"] == node_id:
+                    if run_commands(sock, [f"[con_id={node_id}] {command}"], dry_run, debug):
+                        tree = request(sock, GET_TREE)
+                prepare(tree)
+            continue
+        if kind != EVENT_WINDOW:
+            continue
+        if event.get("change") == "focus":
             base = event["container"]["id"]  # focus on a con that is no window sends no event
             exact = True
             selected = None
-        if kind != EVENT_WINDOW or event.get("change") not in TRIGGERS:
-            continue
         change, node_id = event["change"], event["container"]["id"]
         if change == "new":
             placed = plan_append(request(sock, GET_TREE), selected, node_id, workspace_open) if selected else None

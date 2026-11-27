@@ -84,8 +84,9 @@ CONFIG='workspace_open = half' tests/run scenarios   # the program reads this co
   tree read after a key press can already show the next press. After each split the daemon sends a
   tick naming the tile and its wrapper's slot; when `plan_unwrap` removes ancestors above that wrapper
   in the same pass, the slot is taken from the topmost removed ancestor. The tile's next move event
-  consumes the tick and only unwrapped if the tile is now in that slot. `tests/run keys` K3 sends
-  two presses at once, and K5 covers closing a sibling before a move key.
+  consumes the tick and only unwrapped if the tile is now in that slot. Only keybindings containing
+  `move` consume `unwrapped`, so unrelated keybindings after a `swaymsg move` don't rewrap it.
+  `tests/run keys` K3 sends two presses at once, and K5 covers closing a sibling before a move key.
 - If an opening joins the focused tile's siblings, wrap the old tile and move the new tile into the
   wrapper. A tagged IPC tick then rechecks the restored rectangle and prepares the next split,
   including when Sway keeps focus on the old tile. Scenarios 12–14 cover moves, manual `split none`,
@@ -123,9 +124,10 @@ CONFIG='workspace_open = half' tests/run scenarios   # the program reads this co
   moves the focus off that one. The daemon keeps one such wrapper per workspace, set by a focus key
   there and dropped by the next window focus there; a key press that changes nothing keeps it (F10).
   Sway reports `fullscreen_mode` 1 for every workspace, so only a con counts as fullscreen: two presses
-  that Sway itself takes to the workspace still record the wrapper (F11). Workspace events are handled
-  before a move event's result is passed on, so one can't drop a key move's rewrap (on sway 1.12 none
-  came between them in tests).
+  that Sway itself takes to the workspace still record the wrapper (F11). Workspace events, tick events,
+  and non-trigger window events (such as `mark`, `urgent`, or `title`) are handled or ignored before
+  a move event's `unwrapped` state is cleared, so none can drop a key move's repeat or rewrap
+  (`tests/run keys` K6 covers `move right, mark k6`).
 - A window opened while the workspace itself is focused goes, in Sway, right after the workspace's child
   focused last (the seat's focus stack), so `focus parent` from the left of two halves opens it between
   them. When a focus key left the focus on the workspace (dropped by the next window or workspace focus

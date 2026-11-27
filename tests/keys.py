@@ -8,7 +8,9 @@ through a virtual keyboard, so Sway sends binding events as for a real key.
   K3  two presses sent at once move the window twice
   K4  swaymsg moves (no binding event) still move it on the second command, then keys again on the first
   K5  closing a sibling unwraps the ancestor above the focused wrapper, and one press still moves
+  K6  a compound `move ..., mark ...` binding keeps unwrapped across window::mark and still rewraps
 """
+import os
 import subprocess
 import time
 
@@ -129,5 +131,21 @@ check("K5 move left")
 result(order("c1", "c3") == ["c3", "c1"],
        f"K5 one press of move left after close: c3 on the left ({order('c1', 'c3')})")
 open_and_check("c4", "K5 after move")
+
+print("== K6 compound move + mark binding preserves unwrapped across window::mark")
+with open(os.environ["AUTOTILE_SWAY_CONFIG"], "a") as f:
+    f.write("bindsym Mod4+Shift+u move right, mark k6\n")
+cmd("reload", settle=1)
+cmd("workspace 6")
+spawn("u1")
+spawn("u2")
+cmd(f"[con_id={wid('u1')}] focus")
+start = len(events())
+subprocess.run(["wtype", "-M", "logo", "-M", "shift", "-k", "u", "-m", "shift", "-m", "logo"], check=True)
+time.sleep(0.6)
+marks = since(start, "mark", wid("u1"))
+result(marks >= 1, f"K6 compound binding emitted window::mark ({marks})")
+check("K6 after move+mark binding")
+open_and_check("u3", "K6 after move+mark binding")
 
 finish()
