@@ -123,7 +123,7 @@ def is_wrapper(node):
 
 def hidden(node):
     """A one-child split con: on screen it looks exactly like its child."""
-    return is_wrapper(node) and node["layout"] in SPLITS and not node.get("marks")
+    return is_wrapper(node) and node["layout"] in SPLITS and not node.get("marks") and not node.get("fullscreen_mode")
 
 
 def tree_index(tree):
@@ -232,7 +232,7 @@ def plan_focus_level(tree, direction, base, exact=False):
 
 
 def removable(run):
-    return all(n["layout"] in SPLITS and not n["focused"] and not n.get("marks") for n in run)
+    return all(hidden(n) and not n["focused"] for n in run)
 
 
 def plan_unwrap(tree):
@@ -247,10 +247,10 @@ def plan_unwrap(tree):
         parent_chain = ancestors[:-1]
         if not parent_chain or not is_wrapper(parent_chain[-1]):
             return  # not under a run (parent has 2+ children, or is the workspace)
-        if node["focused"]:
-            return  # the focused window/container: its wrapper stays
-        if is_wrapper(node) and node["layout"] in SPLITS and not node["nodes"][0]["focused"]:
-            return  # inside a run, not under it (the focused node's own wrapper ends a run instead)
+        if node["focused"] and not node["nodes"]:
+            return  # the focused window: its wrapper stays
+        if hidden(node) and not node["focused"] and not (node["nodes"][0]["focused"] and not node["nodes"][0]["nodes"]):
+            return  # inside a run, not under it (the focused window's own wrapper ends a run instead)
         run = []
         for anc in reversed(parent_chain):
             if not is_wrapper(anc):
@@ -287,7 +287,7 @@ def split_target(tree):
     if not hit:
         return None
     node, parent = hit
-    if node.get("fullscreen_mode") or (node.get("percent") or 0) > 1.0:
+    if node["nodes"] or node.get("fullscreen_mode") or (node.get("percent") or 0) > 1.0:
         return None
     if parent["layout"] in SPLITS:
         return node, parent
@@ -437,7 +437,7 @@ def run_pass(sock, tree, dry_run, debug, moved=False):
     if split:
         commands.append(split)
     ok = run_commands(sock, commands, dry_run, debug) if commands else True
-    if not hit or hit[0]["nodes"]:
+    if not hit:
         return None, None
     node, parent = hit
     if is_wrapper(parent):

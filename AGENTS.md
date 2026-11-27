@@ -59,11 +59,14 @@ CONFIG='workspace_open = half' tests/run scenarios   # the program reads this co
 ## Design constraints (each one was found by a failing test)
 
 - `split none` flattens *every* one-child ancestor of its target, not one level → only send it when the
-  whole run is splith/splitv; tabbed/stacked, focused or marked containers end a run.
+  whole run is splith/splitv; tabbed/stacked, focused, fullscreen or marked containers end a run. Only
+  a focused window (leaf) keeps its own wrapper; a one-child split wrapper above a focused container
+  or a marked/fullscreen wrapper is still removed.
 - A focused window with siblings is split even when its parent already has the wanted layout
   (autotiling-rs skips that split, and the next window then gets an equal share of the parent instead of
   half). Only a window alone in its container needs no split, at most a `layout` change of that
-  container. `tests/run resize` covers the windows this matters for.
+  container. Focused containers (nodes with children) are never split. `tests/run resize` covers the
+  windows this matters for.
 - One process, one pass per event, all commands of a pass in one RUN_COMMAND: a separate autotiler +
   cleaner raced (a cleanup could remove a wrapper made for a window focused in the meantime). The one
   exception is the open repair below: its follow-up pass runs on the daemon's own tagged tick. Within
