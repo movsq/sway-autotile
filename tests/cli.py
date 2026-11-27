@@ -12,7 +12,8 @@ so each section runs the program itself.
   9 --config FILE              a valid file (end, half, sway, comments, --config=FILE): runs as without it
  10 config file warnings       missing file, directory, bad UTF-8, unreadable, unknown key, bad value,
                                line without `=`: a warning naming the file and line, the line or file
-                               skipped, exit 0 (--once, --dry-run, daemon)
+                               skipped, exit 0 (--once, --dry-run, daemon); a FIFO whose writer stays
+                               idle: a warning after 1 s, no hang; --config <(…) is read in full
  11 default config file        found in $XDG_CONFIG_HOME, else ~/.config; one that can't be read: a
                                warning; no file at all: defaults, silent
  12 SWAY_AUTOTILE_<KEY>        overrides the file and the default; empty counts as unset; a bad value
@@ -230,6 +231,26 @@ for label, args, env, warnings, want in cases:
     result(p.returncode == 0 and p.stderr == warned(*warnings) and ws_shape() == before,
            f"10 {label}: --once --dry-run warns, exit 0, tree unchanged (rc {p.returncode}, err {p.stderr[-200:]!r})")
 os.chmod(unreadable, 0o600)
+fifo = os.path.join(tmp.name, "fifo")
+os.mkfifo(fifo)
+writer = os.open(fifo, os.O_RDWR)  # a writer that never writes or closes: a blocking read would wait for good
+try:
+    for label, args in (("--check-config", ("--check-config",)), ("--once --dry-run", ("--once", "--dry-run"))):
+        start = time.monotonic()
+        p = run(*args, "--config", fifo, env={**os.environ, "XDG_CONFIG_HOME": no_default})
+        took = time.monotonic() - start
+        result(p.returncode == (1 if args[0] == "--check-config" else 0) and took < 5
+               and p.stderr == warned(f"{fifo}: no end of input within 1 s (a pipe or terminal?)"),
+               f"10 a FIFO with an idle writer, {label}: warns after {took:.1f} s, exit {p.returncode} "
+               f"(err {p.stderr.strip()!r})")
+finally:
+    os.close(writer)
+# --config <(…): a pipe whose text comes late is read in full
+p = subprocess.run(["bash", "-c", f'exec "$0" -B "$1" --check-config --config <(sleep 0.3; echo "workspace_open = half")',
+                    sys.executable, PROGRAM], capture_output=True, text=True, timeout=20,
+                   env={**no_sock, "XDG_CONFIG_HOME": no_default})
+result(p.returncode == 0 and not p.stderr and p.stdout == "workspace_open = half\n",
+       f"10 --config <(sleep 0.3; echo …): reads the pipe (rc {p.returncode}, out {p.stdout!r}, err {p.stderr.strip()!r})")
 bad = config_file("bad-daemon", "workspace_open = on\n")
 warning = warned(f"{bad}:1: workspace_open: {BAD} 'on'")
 p = run("--once", "--config", bad)

@@ -52,12 +52,15 @@ variable exported in a shell profile overrides the file. A problem in the file o
 unknown key or variable, a bad value, a file that can't be read) prints a warning and is skipped:
 that option keeps the value it would have without it, and the program runs on.
 """
+import errno
 import json
 import os
 import re
+import select
 import socket
 import struct
 import sys
+import time
 from uuid import uuid4
 
 MAGIC = b"i3-ipc"
@@ -489,6 +492,30 @@ OPTIONS = {"workspace_open": ("end", one_of("end", "half", "sway"))}  # config k
 ENV_PREFIX = "SWAY_AUTOTILE_"  # + the key upper-cased: overrides the file
 
 
+READ_WAIT = 1.0  # seconds a config pipe may take to reach its end, e.g. --config <(…)
+
+
+def read_text(path):
+    """The file's text. A pipe or terminal is read without blocking for good: one that reaches no end
+    within READ_WAIT seconds, such as a FIFO with an idle writer or /dev/stdin on a terminal, fails."""
+    fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_CLOEXEC)  # opening a FIFO doesn't wait
+    try:
+        chunks, deadline = [], time.monotonic() + READ_WAIT
+        while True:
+            try:
+                chunk = os.read(fd, 65536)
+            except BlockingIOError:
+                left = deadline - time.monotonic()
+                if left <= 0 or not select.select([fd], [], [], left)[0]:
+                    raise OSError(errno.ETIMEDOUT, f"no end of input within {READ_WAIT:g} s (a pipe or terminal?)")
+                continue
+            if not chunk:
+                return b"".join(chunks).decode("utf-8")
+            chunks.append(chunk)
+    finally:
+        os.close(fd)
+
+
 def load_config(path, warnings):
     """The options from `path`, or from the default file if `path` is None (a missing one is fine).
     Each problem goes to `warnings` and is skipped: a bad line changes nothing, a file that can't be
@@ -500,8 +527,7 @@ def load_config(path, warnings):
         if not os.path.exists(path):
             return config
     try:
-        with open(path, encoding="utf-8") as f:
-            lines = f.read().splitlines()
+        lines = read_text(path).splitlines()
     except (OSError, UnicodeDecodeError) as e:
         warnings.append(f"{path}: {getattr(e, 'strerror', None) or e}")
         return config
